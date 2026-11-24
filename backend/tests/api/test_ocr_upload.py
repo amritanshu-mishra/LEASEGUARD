@@ -99,3 +99,32 @@ def test_scanned_lease_is_read_and_the_audit_uses_it(client: TestClient):
     # 3. And the lease screen still answers.
     lease = client.get(f"/api/leases/{lease_id}").json()
     assert lease["terms_in_force"], "audit produced no terms in force"
+
+
+def test_committed_scan_demo_sample_reads_all_terms(client: TestClient):
+    """The scan we ship in samples/ must actually work, not just exist.
+
+    The demo script tells a presenter to upload this file, so it is checked as
+    a fixture: every term of the synthetic lease must come out, including base
+    rent. That last one regressed once - OCR rendered "Rs. 50,000" with no space,
+    the quote failed validation, and BR6 correctly nulled the value, which is
+    honest but makes the sample look broken.
+    """
+    sample = Path(__file__).resolve().parents[3] / "samples" / "scan-demo" / "Scanned_Lease_Shop12_SYNTHETIC.pdf"
+    if not sample.exists():
+        pytest.skip("scan demo sample not generated")
+
+    lease_id = _lease(client)
+    r = client.post(
+        f"/api/leases/{lease_id}/documents",
+        files={"file": (sample.name, sample.read_bytes(), "application/pdf")},
+        data={"kind": "lease", "effective_date": "2025-04-01"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ocr"] is True
+
+    values = {t["term_type"]: t["value"] for t in body["terms"]}
+    assert values["base_rent_paise"] == 5_000_000, values
+    assert values["escalation_rate_bp"] == 1000, values
+    assert values["maintenance_cap_paise"] == 500_000, values

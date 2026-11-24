@@ -6,6 +6,10 @@ PDF files, parsed back with the same code path used for user uploads.
 
 Everything here is fictional. No real tenant, landlord, or property is referenced.
 Run:  python scripts/make_samples.py
+
+The `scan-demo` output needs the OCR dependencies (`scripts/install_backend.sh`);
+if they are missing, that one file is skipped with a message and the rest still
+generate.
 """
 from __future__ import annotations
 
@@ -197,6 +201,59 @@ INVOICE_PAGES = [
 ]
 
 
+SCAN_LINES = [
+    "COMMERCIAL LEASE DEED (PHOTOCOPIED COPY)",
+    "Shop No. 12, Sector 18 Market, Noida",
+    "Monthly Rent is Rs. 50,000 per month.",
+    "Rent shall increase by 10 percent per annum on each anniversary.",
+    "Maintenance shall be capped at Rs. 5,000 per month.",
+    "Commencement Date: 1 April 2025",
+    "This document is synthetic and is not a real lease.",
+]
+
+
+def build_scanned_pdf(lines: list[str], out: Path) -> int:
+    """A PDF whose pages contain only a picture of text - i.e. a photocopy.
+
+    This is what a tenant actually has when they photograph their lease, and it
+    is the case the OCR path exists for. No text layer at all, so pypdf finds
+    nothing and documents.py falls through to OCR.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    import pymupdf as fitz
+
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+    try:
+        font = ImageFont.truetype(font_path, 30)
+    except OSError:  # pragma: no cover - font missing on an unusual host
+        font = ImageFont.load_default()
+
+    # Grayscale JPEG, not PNG: a lossless 1900 px image of a text page is ~4 MB,
+    # which is a silly thing to ship in a repo and close to the 10 MB upload cap.
+    # JPEG also better mimics an actual phone photo, which is the point.
+    img = Image.new("L", (1900, 780), "white")
+    draw = ImageDraw.Draw(img)
+    y = 40
+    for line in lines:
+        draw.text((50, y), line, fill="black", font=font)
+        y += 72
+
+    import io
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80, optimize=True)
+    buf.seek(0)
+
+    doc = fitz.open()
+    page = doc.new_page(width=800, height=328)
+    page.insert_image(fitz.Rect(0, 0, 800, 328), stream=buf.getvalue())
+    data = doc.tobytes()
+    doc.close()
+    out.write_bytes(data)
+    return len(data)
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     files = {
@@ -208,6 +265,12 @@ def main() -> None:
         data = build_pdf(pages)
         (OUT / name).write_bytes(data)
         print(f"wrote samples/{name} ({len(data)} bytes, {len(pages)} pages)")
+
+    # A scanned/photographed copy of a league, for demonstrating the OCR path.
+    scan_dir = OUT / "scan-demo"
+    scan_dir.mkdir(exist_ok=True)
+    size = build_scanned_pdf(SCAN_LINES, scan_dir / "Scanned_Lease_Shop12_SYNTHETIC.pdf")
+    print(f"wrote samples/scan-demo/Scanned_Lease_Shop12_SYNTHETIC.pdf ({size} bytes, image-only)")
 
 
 if __name__ == "__main__":

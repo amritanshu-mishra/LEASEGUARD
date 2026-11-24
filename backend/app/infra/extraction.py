@@ -34,8 +34,26 @@ Rules:
 - No extra keys."""
 
 
+# Abbreviations whose trailing period is punctuation, not a word break. OCR
+# commonly renders "Rs. 50,000" with no space ("Rs.50,000"); a naive whitespace
+# normalisation then treats the period as a sentence end and inserts a space the
+# document never had, so a quote that IS verbatim fails validation - and BR6
+# then nulls a perfectly good value. Measured on a scanned lease: base rent came
+# back as `None` while every other term came through.
+_ABBREV = re.compile(r"\b(Rs|INR|Mr|Mrs|Ms|Dr|No|Smt|Shri)\.", re.IGNORECASE)
+
+
 def _normalize_ws(s: str) -> str:
-    return re.sub(r"\s+", " ", s).strip()
+    """Collapse whitespace, but treat "Rs." + amount as one token.
+
+    "Rs. 50,000" and "Rs.50,000" both normalise to "Rs.50,000", so a quote is
+    accepted when it is verbatim apart from that one spacing difference. This
+    deliberately does not loosen anything else: real differences still fail.
+    """
+    s = _ABBREV.sub(lambda m: m.group(1) + "\x00", s)   # protect the period
+    s = re.sub(r"\s+", " ", s)                          # collapse whitespace
+    s = re.sub(r"(\x00) ", r"\1", s)                    # drop space after it
+    return s.replace("\x00", ".").strip()
 
 
 def validate_quote(quote: str, document_text: str) -> bool:

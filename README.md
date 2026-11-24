@@ -39,9 +39,10 @@ independent safeguards keep it honest:
 ## Try it in 60 seconds
 
 ```bash
-# 1. Backend
+# 1. Backend - use the script, not pip directly: it installs the OCR extras and
+#    then proves `cv2` imports, which a plain `pip install -r` does not guarantee.
+bash scripts/install_backend.sh
 cd backend
-python3 -m pip install -r requirements.txt      # add --break-system-packages if needed
 PYTHONPATH=. python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 # 2. Frontend (separate terminal, optional for local dev)
@@ -180,12 +181,17 @@ Base path `/api`. JSON in, JSON out.
 
 ```bash
 cd backend
-PYTHONPATH=. pytest -q                                    # 74 tests
+bash ../scripts/install_backend.sh        # installs deps and verifies OCR imports
+PYTHONPATH=. pytest -q                    # 95 tests
 PYTHONPATH=. pytest -q --cov=app.domain --cov=app.services --cov-fail-under=90
+
+cd ../frontend
+npm ci && npm run e2e:ci                  # builds, starts the API, drives the real UI
 ```
 
-**74 tests, 94% branch coverage** on the domain + service layers (the spec target is 90%).
-CI runs the same gate on every push (`.github/workflows/ci.yml`).
+**95 backend tests, 93.7% branch coverage** on the domain + service layers (the spec target is
+90%), plus **23 UI end-to-end checks**. CI runs both on every push
+(`.github/workflows/ci.yml`).
 
 - `tests/domain/test_golden_cases.py` — the spec's golden cases **G1–G6** and unit cases
   **U1–U2**, plus BR1/BR2/BR7/BR8 rules, written as the spec states them.
@@ -198,6 +204,16 @@ CI runs the same gate on every push (`.github/workflows/ci.yml`).
   undercharge handling, duplicate/unreadable upload rejection, letter blocked before
   approval, audit-log contents, cross-user isolation, and a check that the cited PDF page
   numbers really contain the quoted clauses.
+- `tests/api/test_sessions.py` — two browsers cannot list, audit, letter, delete or read the
+  activity trail of each other, and a stranger's delete removes no files from disk.
+- `tests/api/test_corrections.py` — correcting a misread value changes the audit, the term is
+  marked as user-supplied rather than quoted evidence, and another tenant gets a 404.
+- `tests/domain/test_ocr.py`, `tests/api/test_ocr_upload.py` — digit repair (`40,ooo`,
+  `l0 percent`), scanned PDFs and photos read correctly, OCR provenance returned, and a
+  text PDF *not* marked as OCR. These **fail** rather than skip if OCR is installed but
+  cannot import, so a broken cv2 cannot quietly disable the feature.
+- `frontend/e2e/smoke.mjs` — the built SPA driven in jsdom against a live server: sample
+  case, corrections, reload persistence, invoice audit, approval, letter, Hindi letter.
 
 ---
 
@@ -245,14 +261,32 @@ samples/                   the three synthetic PDFs
 - **Not legal advice.** The UI says so on every screen that matters.
 - **No recovery claims.** Metrics are "excess detected", "flagged for review", "time saved".
 - **No automated sending.** WhatsApp opens with text pre-filled; the tenant decides.
-- **Text-based documents only.** Scans are refused with a message rather than guessed at.
-- **Single demo user.** Authentication and multi-tenancy are out of scope for the hackathon;
-  the storage layer is user-scoped so this is a schema change, not a rewrite.
 - **Two checks implemented.** Rent escalation and maintenance cap. The precedence engine and
   evidence model generalise to deposits, late fees and GST, which is the next step.
-- **No authentication.** One demo user. Finding lookups are lease-scoped, so the data layer
-  is ready for a `user_id` claim, but there is no login. Judges should read this as a scoped
-  demo, not a shipped multi-tenant product.
+
+- **Sessions, not accounts.** Each browser gets an opaque token in an HttpOnly,
+  `SameSite=Lax` cookie; only its SHA-256 hash is stored, and every query is scoped to the
+  session's `user_id`. Two browsers cannot see each other's leases, bills or activity trail
+  (six tests cover exactly that). What this is **not**: there is no password, no email, no
+  recovery, and no account that follows you to a second device. Clearing cookies loses the
+  leases. It is enough to stop one tenant reading another's rent, which is the property that
+  matters; it is not a login system, and the demo does not claim to be one.
+
+- **OCR reads scans and photos, with honest caveats.** A PDF with no text layer is rendered
+  page by page and read with RapidOCR; a JPEG/PNG upload goes straight to OCR. Measured
+  behaviour: on a synthetic page the engine read every line with mono and serif fonts but
+  **dropped the escalation clause entirely** with a sans font, while still reporting 0.98
+  average confidence. Per-line confidence therefore cannot detect a missing clause. So an
+  OCR'd document is flagged (`ocr: true`), the tenant gets an explicit warning that a machine
+  read a picture and a line may be missing, the lease screen keeps a "read from a scan" badge,
+  and every term can be corrected by hand. Digit repair (o→0, l→1) runs only inside numeric
+  tokens, because on a real scan "10 percent" came back as "l0 percent" and produced an
+  escalation rate of **0** - a silently wrong audit.
+
+- **Not tested on a real phone.** No browser can be installed in the build environment, so the
+  UI is driven with jsdom against the real bundle (23 checks, in CI). That catches broken
+  buttons and dead requests. It cannot catch a layout bug, a touch-target problem, or anything
+  that only appears on a real screen. Treat mobile as designed-for, not verified.
 
 ---
 

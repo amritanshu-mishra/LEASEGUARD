@@ -1,4 +1,4 @@
-# Demo Script — LeaseGuard (3 minutes)
+# Demo Script — LeaseGuard (4 minutes)
 
 Target: a judge who has 3 minutes and 40 seconds of patience. Goal: they should remember
 **one** thing — *every discrepancy comes with the clause, the page and the arithmetic.*
@@ -88,7 +88,23 @@ Then show the second finding: **Maintenance cap, page 4** of the lease. Open the
 - Say: *"No API key configured — this is the deterministic extractor, and every value is
   still traceable to a quote in the file."*
 
-### 3:10–3:30 — Close
+### 3:10–3:35 — A photo, and a number that is wrong
+
+Two features judges tend to probe, both worth 20 seconds:
+
+- **A photographed lease.** Upload a photo (or `samples/scan-demo/*.pdf`, a PDF that is
+  only a picture). It is read, and the screen says **"Read from a scan"** with a warning
+  that a machine read a picture and may have skipped a line. Say: *"OCR drops lines without
+  telling you — we measured it dropping the escalation clause while still scoring 0.98
+  confidence — so we never show it as clean text, and we say so."*
+- **Correcting a bad number.** On any term, press **Fix**, type the right value, save. The
+  audit re-runs immediately and the term is marked **corrected by you**, not quoted as
+  evidence. Say: *"The machine is allowed to be wrong. It is not allowed to pretend it
+  wasn't corrected."*
+
+Optionally: open a second private window and show the two browsers do not share data.
+
+### 3:35–3:55 — Close
 
 > "LeaseGuard doesn't recover money and it doesn't give legal advice. It makes a silent,
 > repeating loss visible — with evidence a landlord cannot brush aside — and it does it in

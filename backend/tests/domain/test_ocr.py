@@ -111,6 +111,38 @@ class TestNumericRepair:
             assert ocr.repair_numeric_confusions(text) == text
 
 
+class TestQuoteValidationOnOcrText:
+    """The BR6 guarantee must survive OCR spacing.
+
+    OCR renders "Rs. 50,000" as "Rs.50,000". A naive whitespace normalisation
+    reads the period as a sentence end, inserts a space the document never had,
+    and rejects a quote that is actually verbatim - whereupon BR6 nulls the
+    value. Measured: base rent came out as None on a scanned lease while every
+    other term worked.
+    """
+
+    def test_missing_space_after_currency_abbreviation_still_matches(self):
+        from app.infra.extraction import validate_quote
+
+        assert validate_quote("Rs. 50,000 per month", "Monthly Rent is Rs.50,000 per month.")
+
+    def test_normal_spacing_still_matches(self):
+        from app.infra.extraction import validate_quote
+
+        assert validate_quote("Rs. 50,000 per month", "Monthly Rent is Rs. 50,000 per month.")
+
+    def test_a_different_amount_is_still_rejected(self):
+        """The loosening must not become a hole that lets any number through."""
+        from app.infra.extraction import validate_quote
+
+        assert not validate_quote("Rs. 60,000 per month", "Monthly Rent is Rs.50,000 per month.")
+
+    def test_unrelated_text_is_still_rejected(self):
+        from app.infra.extraction import validate_quote
+
+        assert not validate_quote("The deposit is refundable", "Monthly Rent is Rs.50,000.")
+
+
 class TestScannedDocuments:
     def test_scanned_pdf_is_ocred_and_flagged(self, tmp_path):
         if not _pytest_ocr_available():
