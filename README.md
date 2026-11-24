@@ -98,6 +98,8 @@ this repository.
 |---|---|
 | **Groq instead of Anthropic** | `backend/app/infra/extraction.py` — OpenAI-compatible Groq chat completions (`GROQ_API_KEY`, `llama-3.3-70b-versatile`), with a deterministic fallback |
 | **Full accessibility floor** | Skip link, landmark regions, AA contrast on every text pair (verified numerically, `--muted` darkened from 4.39:1 to 5.02:1), visible focus rings, `aria-pressed` on the language toggle, `role="alert"` on every error, live `role="status"` on uploads, and no colour-only state signalling |
+| **Hindi lease documents** | The deterministic extractor reads Hindi (किराया / रखरखाव / वृद्धि / प्रतिशत / अधिकतम, Devanagari digits and Hindi number words), not just the Hindi UI. A Hindi lease + amendment + invoice reaches the same ₹3,200 audit result as the English case |
+| **Privacy-complete delete** | Deleting a lease removes its raw uploaded files too, with a refcount guard so a file shared by two leases survives until the last reference goes |
 | **Brutal upload feedback** | Wrong file type, an image renamed `.pdf`, an empty file, a file with no readable terms, a duplicate upload and a missing date each produce a specific sentence, not a generic "failed" |
 | **Idempotent demo** | Loading the sample case twice returns the same lease instead of duplicating it, so a live demo cannot leave a mess |
 | **WhatsApp share, not PDF download** | `frontend/src/pages/LetterPage.tsx` — `wa.me/?text=…` with the letter pre-filled, plus copy-to-clipboard. The tenant presses send; nothing is automated |
@@ -178,11 +180,11 @@ Base path `/api`. JSON in, JSON out.
 
 ```bash
 cd backend
-PYTHONPATH=. pytest -q                                    # 58 tests
+PYTHONPATH=. pytest -q                                    # 74 tests
 PYTHONPATH=. pytest -q --cov=app.domain --cov=app.services --cov-fail-under=90
 ```
 
-**58 tests, 94% branch coverage** on the domain + service layers (the spec target is 90%).
+**74 tests, 94% branch coverage** on the domain + service layers (the spec target is 90%).
 CI runs the same gate on every push (`.github/workflows/ci.yml`).
 
 - `tests/domain/test_golden_cases.py` — the spec's golden cases **G1–G6** and unit cases

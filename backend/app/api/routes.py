@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from ..core.config import DEMO_USER_ID, MAX_UPLOAD_MB, UPLOAD_DIR
 from ..infra import documents as docparse
-from ..infra import extraction, store
+from ..infra import extraction, heuristics, store
 from ..services.audit_service import compute_impact, run_audit, terms_in_force
 from ..services.letter_service import build_letter
 from ..services.sample_service import load_sample_case
@@ -134,10 +134,26 @@ async def upload_document(
                 "error": {"code": "no_line_items",
                           "message": "Could not find any billed amounts in this invoice. Try a clearer PDF or paste the text."}
             })
+        invoice_warnings: list[str] = []
+        # Reconcile the typed date with the period printed on the bill. The label is
+        # what the user reads; period_start is what the audit uses to pick the lease
+        # terms in force. If they disagree, one of them is a lie. The document wins on
+        # the month, the typed date wins on the day.
+        period = heuristics.parse_period("\n\n".join(pages))
         label = parsed["period_label"] or eff[:7]
-        invoice = store.create_invoice(lease_id, doc["id"], eff, label, parsed["line_items"])
+        period_start = eff
+        if period:
+            py, pm = period
+            label = heuristics.period_label_from(py, pm)
+            printed = f"{py:04d}-{pm:02d}"
+            if eff[:7] != printed:
+                period_start = f"{printed}-01"
+                invoice_warnings.append(
+                    f"The date you entered ({eff}) does not match the billing period printed on "
+                    f"the invoice ({label}). The audit uses {label}."
+                )
+        invoice = store.create_invoice(lease_id, doc["id"], period_start, label, parsed["line_items"])
         kinds_found = {li.get("kind") for li in parsed["line_items"]}
-        invoice_warnings = []
         if "rent" not in kinds_found:
             invoice_warnings.append(
                 "No rent line was found in this invoice, so rent cannot be checked. "
@@ -189,6 +205,13 @@ async def upload_document(
                 "effective-date field so the correct clause controls."
             )
 
+        if parsed.get("fallback_reason"):
+            warnings.append(
+                "The reading model was unavailable, so the built-in reader was used "
+                f"({parsed['fallback_reason']}). Values below are still checked against "
+                "the document text, but re-check them if a number looks wrong."
+            )
+
         response.update({
             "terms": terms,
             "extractor": parsed.get("extractor", "heuristic"),
@@ -204,10 +227,13 @@ async def upload_document(
 
 
 @router.get("/leases/{lease_id}")
-def get_lease(lease_id: str, as_of: str = Query(default="2026-04-01")):
+def get_lease(lease_id: str, as_of: str = Query(default=None)):
     lease = store.get_lease(lease_id, DEMO_USER_ID)
     if not lease:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    # "Today" by default. The previous default was a hardcoded demo date, which meant
+    # any non-UI caller silently asked for the terms in force seven months ago.
+    as_of = as_of or date.today().isoformat()
     in_force, superseded = terms_in_force(lease_id, as_of)
     lease["terms_in_force"] = in_force
     lease["superseded_terms"] = superseded
@@ -299,8 +325,11 @@ def generate_letter(invoice_id: str, language: str = Query(default="en")):
 
 @router.delete("/leases/{lease_id}")
 def delete_lease(lease_id: str):
+    # Read the file paths first: after the delete the rows that name them are gone.
+    paths = store.document_storage_paths(lease_id)
     ok = store.delete_lease(lease_id, DEMO_USER_ID)
     if not ok:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    removed = store.purge_orphan_files(paths)
     store.log_event(DEMO_USER_ID, "lease_deleted", "lease", lease_id)
-    return {"ok": True}
+    return {"ok": True, "files_removed": removed}

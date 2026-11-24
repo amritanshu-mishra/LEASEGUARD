@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .db import db, jdump, jload, rows_to_dicts, row_to_dict
+
+log = logging.getLogger(__name__)
 
 
 def now_iso() -> str:
@@ -52,12 +56,49 @@ def create_lease(user_id: str, property_label: str, start_date: str, end_date: s
 
 
 def list_leases(user_id: str) -> list[dict]:
+    """Leases with their counts, in one query per table instead of per lease.
+
+    The per-lease loop ran three follow-up queries each, so a market association with
+    500 leases issued 1501 queries and took ~310 ms just to paint the dashboard.
+    """
     with db() as conn:
-        leases = rows_to_dicts(conn.execute("SELECT * FROM leases WHERE user_id=? ORDER BY created_at DESC", (user_id,)).fetchall())
-    for l in leases:
-        l["documents_count"] = count_documents(l["id"])
-        l["invoices_count"] = count_invoices(l["id"])
-        l["pending_findings"] = count_pending_findings(l["id"])
+        leases = rows_to_dicts(conn.execute(
+            "SELECT * FROM leases WHERE user_id=? ORDER BY created_at DESC", (user_id,)
+        ).fetchall())
+        if not leases:
+            return leases
+        lease_ids = [l["id"] for l in leases]
+
+        docs: dict[str, int] = {}
+        invoices: dict[str, int] = {}
+        pending: dict[str, int] = {}
+
+        # Chunked to stay well under SQLite's bound-parameter limit on old builds.
+        chunk = 400
+        for start in range(0, len(lease_ids), chunk):
+            part = lease_ids[start:start + chunk]
+            marks = ",".join("?" * len(part))
+            for row in conn.execute(
+                f"SELECT lease_id, COUNT(*) c FROM documents WHERE lease_id IN ({marks}) GROUP BY lease_id",
+                part,
+            ):
+                docs[row["lease_id"]] = int(row["c"])
+            for row in conn.execute(
+                f"SELECT lease_id, COUNT(*) c FROM invoices WHERE lease_id IN ({marks}) GROUP BY lease_id",
+                part,
+            ):
+                invoices[row["lease_id"]] = int(row["c"])
+            for row in conn.execute(
+                f"SELECT lease_id, COUNT(*) c FROM findings "
+                f"WHERE lease_id IN ({marks}) AND approved IS NULL AND information_only=0 GROUP BY lease_id",
+                part,
+            ):
+                pending[row["lease_id"]] = int(row["c"])
+
+    for lease in leases:
+        lease["documents_count"] = docs.get(lease["id"], 0)
+        lease["invoices_count"] = invoices.get(lease["id"], 0)
+        lease["pending_findings"] = pending.get(lease["id"], 0)
     return leases
 
 
@@ -74,10 +115,55 @@ def get_lease(lease_id: str, user_id: str) -> dict | None:
     return lease
 
 
+def document_storage_paths(lease_id: str) -> list[str]:
+    """Storage paths belonging to a lease, read *before* the rows are deleted."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT storage_path FROM documents WHERE lease_id=?", (lease_id,)
+        ).fetchall()
+    return [r["storage_path"] for r in rows if r["storage_path"]]
+
+
+def storage_path_still_referenced(storage_path: str) -> bool:
+    """True if any surviving document row still points at this file.
+
+    File names are content-addressed (sha prefix + filename), so the same document
+    uploaded to two leases shares one file. Unlinking it while the other lease still
+    exists would destroy that lease's document.
+    """
+    with db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM documents WHERE storage_path=? LIMIT 1", (storage_path,)
+        ).fetchone()
+    return row is not None
+
+
 def delete_lease(lease_id: str, user_id: str) -> bool:
     with db() as conn:
         cur = conn.execute("DELETE FROM leases WHERE id=? AND user_id=?", (lease_id, user_id))
         return cur.rowcount > 0
+
+
+def purge_orphan_files(paths: list[str]) -> int:
+    """Delete uploaded files that no document row references any more.
+
+    Deleting a lease removes its rows (ON DELETE CASCADE) but the raw file used to
+    stay on disk forever, leaving readable rent figures behind after the user asked
+    for the lease to be gone. This closes that.
+    """
+    removed = 0
+    for path in paths:
+        if storage_path_still_referenced(path):
+            continue
+        try:
+            fp = Path(path)
+            if fp.is_file():
+                fp.unlink()
+                removed += 1
+        except OSError:
+            # A file we cannot remove must not fail the delete the user asked for.
+            log.warning("could not remove uploaded file %s", path, exc_info=True)
+    return removed
 
 
 def count_documents(lease_id: str) -> int:

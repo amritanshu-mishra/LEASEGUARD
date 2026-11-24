@@ -432,3 +432,124 @@ def test_sample_is_idempotent(client):
     leases = client.get("/api/leases").json()["leases"]
     labels = [l["property_label"] for l in leases]
     assert labels.count(first["lease"]["property_label"]) == 1
+
+
+def test_deleting_a_lease_removes_its_uploaded_files(client):
+    """A deleted lease must not leave readable rent figures on disk.
+
+    The rows cascade, but the raw file used to survive forever. This is a privacy
+    promise, not housekeeping: the user asked for the lease to be gone.
+    """
+    from app.core.config import UPLOAD_DIR
+
+    created = client.post("/api/leases", json={
+        "property_label": "Privacy Test Shop", "start_date": "2025-04-01", "end_date": "2028-03-31",
+    }).json()
+    lease_id = created["lease_id"]
+
+    before = set(UPLOAD_DIR.iterdir())
+    r = _upload(client, lease_id, "lease", "privacy.txt", LEASE_TEXT, "2025-04-01")
+    assert r.status_code == 200
+    written = set(UPLOAD_DIR.iterdir()) - before
+    assert written, "upload should have written a file"
+
+    deleted = client.delete(f"/api/leases/{lease_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["files_removed"] >= 1
+    assert not (written & set(UPLOAD_DIR.iterdir())), "file survived the lease delete"
+
+
+def test_shared_document_file_is_not_removed_while_still_referenced(client):
+    """Two leases can share one content-addressed file; deleting one must not break the other."""
+    from app.core.config import UPLOAD_DIR
+
+    same_text = LEASE_TEXT + "\nShared upload marker.\n"
+    a = client.post("/api/leases", json={
+        "property_label": "Shared A", "start_date": "2025-04-01", "end_date": "2028-03-31",
+    }).json()["lease_id"]
+    b = client.post("/api/leases", json={
+        "property_label": "Shared B", "start_date": "2025-04-01", "end_date": "2028-03-31",
+    }).json()["lease_id"]
+    _upload(client, a, "lease", "shared.txt", same_text, "2025-04-01")
+    _upload(client, b, "lease", "shared.txt", same_text, "2025-04-01")
+
+    client.delete(f"/api/leases/{a}")
+    remaining = client.get(f"/api/leases/{b}").json()
+    assert remaining["documents"], "lease B lost its document"
+
+
+def test_invoice_period_ignores_due_date(client):
+    """A bill 'Due 15 May 2026' for April rent must be filed as April.
+
+    Filing it as May silently audits it against the wrong terms in force.
+    """
+    lease_id = client.post("/api/leases", json={
+        "property_label": "Period Shop", "start_date": "2025-04-01", "end_date": "2028-03-31",
+    }).json()["lease_id"]
+    text = (
+        "TAX INVOICE\n"
+        "Due date: 15 May 2026\n"
+        "Rent for the month of April 2026   Rs. 44,000\n"
+        "Common Area Maintenance            Rs. 5,200\n"
+    )
+    r = _upload(client, lease_id, "invoice", "period.txt", text, "2026-04-01")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["period_label"] == "April 2026"
+    assert body["invoice"]["period_start"] == "2026-04-01"
+
+
+def test_invoice_period_overrides_a_mismatched_typed_date(client):
+    """When the typed date and the printed period disagree, say so and use the document."""
+    lease_id = client.post("/api/leases", json={
+        "property_label": "Mismatch Shop", "start_date": "2025-04-01", "end_date": "2028-03-31",
+    }).json()["lease_id"]
+    text = (
+        "INVOICE\nInvoice Period: June 2026\n"
+        "Monthly Rent  Rs. 44,000\nCommon Area Maintenance  Rs. 5,200\n"
+    )
+    r = _upload(client, lease_id, "invoice", "mismatch.txt", text, "2026-09-15")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["period_label"] == "June 2026"
+    assert body["invoice"]["period_start"] == "2026-06-01"
+    assert any("does not match" in w for w in body["warnings"])
+
+
+def test_hindi_lease_survives_the_whole_journey(client):
+    """A Hindi lease + amendment + invoice must reach the same audit result in Hindi."""
+    hindi_lease = (
+        "दुकान किरायानामा\n"
+        "यह पट्टा दिनांक 1 अप्रैल 2025 से प्रभावी है।\n"
+        "धारा 1: मासिक किराया 40,000 रुपये प्रति माह है।\n"
+        "धारा 2: किराये में प्रत्येक वर्ष 10 प्रतिशत की वृद्धि होगी।\n"
+        "धारा 3: रखरखाव शुल्क 4,000 रुपये प्रति माह से अधिक नहीं होगा।\n"
+    )
+    hindi_amendment = (
+        "पहला संशोधन\n"
+        "प्रभावी तिथि: 1 जनवरी 2026\n"
+        "धारा 1: किराये की वार्षिक वृद्धि 5 प्रतिशत से अधिक नहीं होगी।\n"
+    )
+    hindi_invoice = (
+        "किराया चालान\nबिलिंग अवधि: अप्रैल 2026\n"
+        "मासिक किराया 44,000 रुपये\nरखरखाव 5,200 रुपये\n"
+    )
+    lease_id = client.post("/api/leases", json={
+        "property_label": "हिंदी दुकान", "start_date": "2025-04-01", "end_date": "2028-03-31",
+    }).json()["lease_id"]
+
+    for kind, text, eff in (
+        ("lease", hindi_lease, "2025-04-01"),
+        ("amendment", hindi_amendment, "2026-01-01"),
+        ("invoice", hindi_invoice, "2026-04-01"),
+    ):
+        r = _upload(client, lease_id, kind, f"{kind}.txt", text, eff)
+        assert r.status_code == 200, (kind, r.text)
+
+    audit = client.post(f"/api/leases/{lease_id}/audit").json()
+    findings = {f["check_type"]: f for f in audit["findings"]}
+    assert findings["rent_escalation"]["status"] == "confirmed"
+    assert findings["rent_escalation"]["difference_paise"] == 200_000    # Rs 2,000
+    assert findings["rent_escalation"]["expected_paise"] == 4_200_000    # Rs 42,000
+    assert findings["maintenance_cap"]["difference_paise"] == 120_000    # Rs 1,200
+    assert audit["impact"]["excess_detected_paise"] == 320_000           # Rs 3,200

@@ -102,7 +102,7 @@ photo upload, no scheduled re-audits. None of these affect the core claim of the
 | Criterion | Weight | Evidence in this repo |
 |---|---|---|
 | **Problem understanding** | 25% | `docs/PROBLEM_BRIEF.md`; six named failure modes; the sample reproduces the most common one (amendment ignored). Written from the tenant's situation, not the technology |
-| **Working solution** | 25% | Live app completes the full journey; 58 tests; upload path works on unseen documents; migration verified against an old-schema DB |
+| **Working solution** | 25% | Live app completes the full journey; 74 tests; upload path works on unseen documents; migration verified against an old-schema DB |
 | **Innovation** | 20% | Deterministic precedence with a *refuse-to-guess* rule for ambiguous newer clauses; quote-gated extraction that discards any model output not literally in the document; evidence-preserving Hindi letter |
 | **Value and impact** | 20% | `docs/VALUE_AND_ADOPTION.md`; impact metric with explicit non-claims; association-led adoption path; honest failure risks |
 | **User experience** | 10% | Hindi on all key screens incl. the letter; WhatsApp as the send channel; evidence-first cards; accessibility pass; 360 px layout |

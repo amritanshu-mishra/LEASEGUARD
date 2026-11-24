@@ -9,6 +9,7 @@ Honesty rules enforced here:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -16,6 +17,8 @@ import httpx
 
 from ..core.config import EXTRACTION_MODEL, GROQ_API_KEY, USE_FIXTURES
 from . import heuristics
+
+log = logging.getLogger(__name__)
 
 EXTRACTION_SYSTEM = """You extract lease/invoice terms into strict JSON. Return ONLY JSON.
 Schema:
@@ -128,14 +131,20 @@ async def extract_terms(pages: list[str], doc_kind: str) -> dict[str, Any]:
     for the synthetic sample case, which does not call this function.
     """
     full_text = "\n\n".join(pages)
+    fallback_reason = ""
     if GROQ_API_KEY and not USE_FIXTURES:
         try:
             result = await extract_terms_with_groq(full_text, doc_kind)
-            kept, _rejected = _sanitize_model_terms(result, full_text)
+            kept, rejected = _sanitize_model_terms(result, full_text)
             if kept:
                 return {"terms": kept, "extractor": "groq"}
-        except Exception:
-            pass  # fall through to heuristics; never fail the upload
+            fallback_reason = (
+                f"the model returned no quote that appears in the document "
+                f"({len(rejected)} rejected)"
+            )
+        except Exception as exc:  # never fail the upload, but never hide the reason
+            log.warning("Groq extraction failed, falling back to heuristics: %s", exc)
+            fallback_reason = f"the model request failed ({type(exc).__name__})"
 
     result = heuristics.extract_terms_heuristic(pages, doc_kind)
     # Hard guarantee: every quote must exist in the document.
@@ -144,7 +153,12 @@ async def extract_terms(pages: list[str], doc_kind: str) -> dict[str, Any]:
             t["value"] = None
             t["ambiguous"] = True
             t["confidence"] = 0.0
-    return {"terms": result["terms"], "extractor": "heuristic"}
+    out = {"terms": result["terms"], "extractor": "heuristic"}
+    if fallback_reason:
+        # Surface it: a silent downgrade to heuristics looks identical to a confident
+        # model extraction, which hides real extraction failures during a demo.
+        out["fallback_reason"] = fallback_reason
+    return out
 
 
 def extract_invoice(pages: list[str]) -> dict[str, Any]:
