@@ -104,8 +104,17 @@ function boot() {
     }
   }
 
-  window.eval(readBundle())
-  return window
+  let bundle = null
+  return {
+    window,
+    // Split from the shell so a test can create data BEFORE the SPA loads. The
+    // dashboard fetches once on mount, and jsdom does not do a real page load on
+    // history.pushState, so a lease created after mount is invisible.
+    start() {
+      bundle = bundle || readBundle()
+      window.eval(bundle)
+    },
+  }
 }
 
 const txt = (w) => w.document.getElementById('root').textContent || ''
@@ -121,11 +130,51 @@ function type(window, el, value) {
   el.dispatchEvent(new window.Event('input', { bubbles: true }))
 }
 
+/**
+ * Create a lease and upload documents through the app's own API, before the UI
+ * fetches. The dashboard loads once on mount, so data created afterwards is
+ * invisible until a full page load, which jsdom does not perform on pushState.
+ */
+async function createLeaseWithDocs(window, label, docs) {
+  const res = await window.fetch('/api/leases', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ property_label: label, start_date: '2025-04-01' }),
+  })
+  const body = await res.json()
+  if (!body.lease_id) return null
+  for (const d of docs) {
+    const form = new FormData()
+    form.append('kind', d.kind)
+    form.append('effective_date', d.effective)
+    form.append('file', new File([d.text], d.name, { type: 'text/plain' }))
+    await window.fetch(`/api/leases/${body.lease_id}/documents`, { method: 'POST', body: form })
+  }
+  return body.lease_id
+}
+
 async function main() {
   console.log(`\nLeaseGuard UI smoke test against ${BASE}\n`)
 
   // ---------------------------------------------------------------- dashboard
-  const w = boot()
+  const shell = boot()
+  const w = shell.window
+
+  // Seed a case the product cannot resolve on its own: a lease with no
+  // maintenance clause at all. Created before the SPA loads, because the
+  // dashboard reads once on mount.
+  const noCapLease = await createLeaseWithDocs(w, 'No Cap Shop, Lucknow', [
+    {
+      kind: 'lease',
+      effective: '2025-04-01',
+      name: 'nocap.txt',
+      text:
+        'COMMERCIAL LEASE\nMonthly Rent of Rs. 40,000 per month.\n' +
+        'Rent shall increase by 10 percent per annum.\nCommencement Date: 1 April 2025\n',
+    },
+  ])
+
+  shell.start()
   check('app renders the dashboard', await until(() => txt(w).length > 20), 'root stayed empty')
   check('sample-case action is present', await until(() => !!byText(w, 'button', 'Sample')))
   check('no JS error on load', jsErrors.length === 0, jsErrors.join('; '))
@@ -176,11 +225,68 @@ async function main() {
   const countAfter = (txt(w).match(/Shop No\. 7/gi) || []).length
   check('sample load did not duplicate the lease', countAfter <= Math.max(countBefore, 1) + 1, `${countBefore} -> ${countAfter}`)
 
+  // ------------------------------------- a term the document could not settle
+  // A lease with no maintenance clause at all: that term is genuinely missing,
+  // not misread. Before this existed the row said "uncertain" and offered no
+  // way forward, so the audit stayed blocked forever.
+  if (noCapLease) {
+    // Navigate straight to this lease. Returning to the dashboard and finding its
+    // card would test the dashboard's fetch timing, not the feature.
+    check('the seeded lease exists', !!noCapLease)
+    w.history.pushState({}, '', `/leases/${noCapLease}`)
+    w.dispatchEvent(new w.PopStateEvent('popstate'))
+    const onLease = await until(() => /Terms in force/i.test(txt(w)))
+    check('the lease screen opens', onLease, txt(w).slice(0, 160))
+    if (onLease) {
+      await wait(300)
+
+      const maintRow = $$(w, 'tbody tr').find((r) => /Maintenance/i.test(r.textContent || ''))
+      check('the missing term reads as uncertain', !!maintRow && /Uncertain/i.test(maintRow.textContent || ''))
+
+      const provide = maintRow && [...maintRow.querySelectorAll('button')].find((b) => /Enter value/i.test(b.textContent || ''))
+      check('an uncertain row offers a way to supply the value', !!provide)
+
+      if (provide) {
+        click(provide)
+        const opened = await until(() => !!$(w, '.term-input'))
+        check('the supply editor opens empty', opened && $(w, '.term-input').value === '')
+        if (opened) {
+          type(w, $(w, '.term-input'), '5000')
+          await wait(50)
+          click($(w, '.term-edit .btn-primary'))
+          const saved = await until(() => /entered by you/i.test(txt(w)))
+          check('the supplied value is marked as entered by you', saved, 'badge never appeared')
+          check('the supplied value is now on screen', txt(w).includes('5,000'))
+          // Scoped to the row: the page also has a Documents table that legitimately
+          // names the file.
+          const rowNow = $$(w, 'tbody tr').find((r) => /Maintenance/i.test(r.textContent || ''))
+          check(
+            'the supplied value cites no document or page',
+            !!rowNow && !/nocap\.txt/.test(rowNow.textContent || '') && !/Page\s*\d/i.test(rowNow.textContent || ''),
+            rowNow?.textContent?.slice(0, 160),
+          )
+        }
+      }
+    }
+  }
+
   // ------------------------------------------------- audit page and letter
+  // Back to the sample case, which has the invoice. The seeded lease was visited
+  // by direct URL above and is not where the invoice lives.
+  w.history.pushState({}, '', '/')
+  w.dispatchEvent(new w.PopStateEvent('popstate'))
+  await until(() => $$(w, '.lease-card').length > 0)
+  const cards = $$(w, '.lease-card')
+  const sampleCard = cards.find((c) => /Sample|Sector 18|Shop/i.test(c.textContent || ''))
+  if (sampleCard) {
+    const link = [...sampleCard.querySelectorAll('a')].find((a) => /Open|खोलें/i.test(a.textContent || ''))
+    click(link)
+    await until(() => /Terms in force/i.test(txt(w)))
+  }
   // The letter lives behind the audit screen, so walk the real path rather than
   // asserting on a control that only exists on another route.
   const auditLink = $$(w, 'a').find((a) => /audit/i.test(a.textContent || ''))
-  check('an invoice audit link exists', !!auditLink)
+  check('an invoice audit link exists', !!auditLink, `on lease screen: ${txt(w).slice(0, 120)}`)
   if (auditLink) {
     click(auditLink)
     const onAudit = await until(() => /verdict|finding|approve|approval|letter/i.test(txt(w)))
