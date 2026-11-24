@@ -191,12 +191,13 @@ def count_pending_findings(lease_id: str) -> int:
 
 # --- documents ---
 
-def create_document(lease_id: str, kind: str, name: str, storage_path: str, effective_date: str, sha256: str, page_count: int, text_content: str) -> dict:
+def create_document(lease_id: str, kind: str, name: str, storage_path: str, effective_date: str, sha256: str, page_count: int, text_content: str, ocr: bool = False, ocr_confidence: float = 1.0) -> dict:
     doc_id = uid()
     with db() as conn:
         conn.execute(
-            "INSERT INTO documents(id,lease_id,kind,name,storage_path,effective_date,sha256,page_count,text_content) VALUES (?,?,?,?,?,?,?,?,?)",
-            (doc_id, lease_id, kind, name, storage_path, effective_date, sha256, page_count, text_content),
+            "INSERT INTO documents(id,lease_id,kind,name,storage_path,effective_date,sha256,page_count,text_content,ocr,ocr_confidence) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (doc_id, lease_id, kind, name, storage_path, effective_date, sha256, page_count, text_content,
+             int(bool(ocr)), float(ocr_confidence)),
         )
     return get_document(doc_id)  # type: ignore
 

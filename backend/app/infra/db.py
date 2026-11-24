@@ -118,6 +118,10 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("audit_log", "detail", "TEXT NOT NULL DEFAULT ''"),
     ("terms", "corrected_by_user", "INTEGER NOT NULL DEFAULT 0"),
     ("terms", "corrected_at", "TEXT NOT NULL DEFAULT ''"),
+    # A scan or photo was read with OCR. Kept so the lease screen can keep
+    # saying "read from a scan" after a reload, not just in the upload response.
+    ("documents", "ocr", "INTEGER NOT NULL DEFAULT 0"),
+    ("documents", "ocr_confidence", "REAL NOT NULL DEFAULT 1.0"),
 ]
 
 
@@ -130,15 +134,34 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
-def init_db() -> None:
+_initialised = False
+
+
+def init_db(force: bool = False) -> None:
+    """Create tables, once.
+
+    Idempotent and cheap after the first call, so every store entry point can
+    call it. That matters beyond the server: a bare `TestClient(app)` never
+    fires the startup hook, and before this the app answered requests against a
+    database with no tables at all - which only looked like it worked because the
+    developer's real database happened to exist.
+    """
+    global _initialised
+    if _initialised and not force:
+        return
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     with _connect() as conn:
         conn.executescript(SCHEMA)
         _apply_migrations(conn)
+    _initialised = True
 
 
 @contextmanager
 def db() -> Iterator[sqlite3.Connection]:
+    # Safety net: a request must never hit a database without tables. Cheap
+    # after the first call, and it makes every entry point self-sufficient
+    # rather than depending on the startup hook having run.
+    init_db()
     conn = _connect()
     try:
         yield conn

@@ -21,6 +21,11 @@ export const strings = {
   delete: { en: 'Delete', hi: 'हटाएं' },
   newLease: { en: 'New Lease', hi: 'नई लीज़' },
   uploadDocument: { en: 'Upload & Audit', hi: 'अपलोड और जांचें' },
+  readFromScan: { en: 'Read from a scan', hi: 'स्कैन से पढ़ा गया' },
+  scanCheckTerms: {
+    en: 'This file was a photo or scan. A machine read the text, and OCR can skip a line without warning - please check each term below.',
+    hi: 'यह फ़ाइल फ़ोटो या स्कैन थी। मशीन ने पाठ पढ़ा, और OCR बिना चेतावनी कोई पंक्ति छोड़ सकता है - कृपया नीचे दिया गया हर शर्त जाँचें।',
+  },
   cancel: { en: 'Cancel', hi: 'रद्द करें' },
   save: { en: 'Save', hi: 'सेव करें' },
   rerun: { en: 'Re-run audit', hi: 'दोबारा जांचें' },

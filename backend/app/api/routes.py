@@ -130,9 +130,24 @@ async def upload_document(
     doc = store.create_document(
         lease_id, kind, file.filename or safe_name, str(storage), eff, sha, len(pages),
         "\n\n".join(pages),
+        ocr=bool(getattr(pages, "ocr", False)),
+        ocr_confidence=float(getattr(pages, "confidence", 1.0)),
     )
 
-    response: dict = {"ok": True, "document_id": doc["id"], "kind": kind, "page_count": len(pages), "pages": []}
+    ocr_used = bool(getattr(pages, "ocr", False))
+    ocr_confidence = float(getattr(pages, "confidence", 1.0))
+    response: dict = {
+        "ok": True, "document_id": doc["id"], "kind": kind, "page_count": len(pages), "pages": [],
+        # How the text was obtained. The UI uses this to say "read from a scan"
+        # instead of implying the numbers were pulled from a text layer.
+        "ocr": ocr_used, "ocr_confidence": round(ocr_confidence, 3) if ocr_used else None,
+    }
+    ocr_warning = (
+        "This file is a scan or a photo, so the text was read with OCR. OCR can "
+        "silently skip a line - check every term below against the document, and "
+        "fix any that are wrong."
+        if ocr_used else ""
+    )
 
     if kind == "invoice":
         parsed = extraction.extract_invoice(pages)
@@ -142,6 +157,8 @@ async def upload_document(
                           "message": "Could not find any billed amounts in this invoice. Try a clearer PDF or paste the text."}
             })
         invoice_warnings: list[str] = []
+        if ocr_warning:
+            invoice_warnings.append(ocr_warning)
         # Reconcile the typed date with the period printed on the bill. The label is
         # what the user reads; period_start is what the audit uses to pick the lease
         # terms in force. If they disagree, one of them is a lie. The document wins on
@@ -196,6 +213,8 @@ async def upload_document(
         # accepting it would mean an later audit says "term_not_found" with no
         # indication that the upload itself was the problem.
         warnings: list[str] = []
+        if ocr_warning:
+            warnings.append(ocr_warning)
         if kind == "lease" and not found:
             warnings.append(
                 "No lease terms could be read from this file. Check that it is the lease "

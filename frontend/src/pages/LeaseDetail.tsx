@@ -133,7 +133,12 @@ export default function LeaseDetail() {
                   {lease.documents.map((d: any) => (
                     <tr key={d.id}>
                       <td className="doc-name">{d.name}</td>
-                      <td><span className={`badge ${d.kind === 'invoice' ? 'badge-gray' : d.kind === 'amendment' ? 'badge-amber' : 'badge-teal'}`}>{d.kind}</span></td>
+                      <td>
+                        <span className={`badge ${d.kind === 'invoice' ? 'badge-gray' : d.kind === 'amendment' ? 'badge-amber' : 'badge-teal'}`}>{d.kind}</span>
+                        {/* A scan is not the same evidence as a text PDF. Say so on the
+                            document itself, not only in the upload response. */}
+                        {d.ocr ? <span className="badge badge-amber" style={{ marginLeft: 6 }} title={t('scanCheckTerms')}>🔍 {t('readFromScan')}</span> : null}
+                      </td>
                       <td>{d.effective_date}</td>
                     </tr>
                   ))}
