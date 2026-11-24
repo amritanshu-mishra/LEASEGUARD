@@ -87,3 +87,7 @@ class Finding:
     controlling_term: Optional[ControllingTermInfo]
     calculation: str = ""
     approved: Optional[bool] = None  # None=pending, True=approved, False=rejected
+    # BR8: undercharges/matches are informational rows, not discrepancies. They are
+    # persisted so the tenant can see the charge was checked and found correct, but
+    # they are excluded from approvals, letters and impact totals.
+    informational: bool = False

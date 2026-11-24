@@ -16,12 +16,27 @@ def uid() -> str:
     return str(uuid.uuid4())
 
 
-def log_event(user_id: str, action: str, entity: str, entity_id: str) -> None:
+def log_event(user_id: str, action: str, entity: str, entity_id: str, detail: str = "") -> None:
+    """Append an audit-log event (BR10).
+
+    Every call records who acted, what they did, which entity it touched, and when.
+    `detail` carries the decision or other non-secret context (never document text).
+    """
     with db() as conn:
         conn.execute(
-            "INSERT INTO audit_log(id,user_id,action,entity,entity_id,created_at) VALUES (?,?,?,?,?,?)",
-            (uid(), user_id, action, entity, entity_id, now_iso()),
+            "INSERT INTO audit_log(id,user_id,action,entity,entity_id,detail,created_at) VALUES (?,?,?,?,?,?,?)",
+            (uid(), user_id, action, entity, entity_id, detail, now_iso()),
         )
+
+
+def list_audit_log(user_id: str, limit: int = 100) -> list[dict]:
+    """Read a user's own audit trail, newest first (BR10 + BR11)."""
+    with db() as conn:
+        rows = rows_to_dicts(conn.execute(
+            "SELECT * FROM audit_log WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall())
+    return rows
 
 
 # --- leases ---
@@ -78,8 +93,13 @@ def count_invoices(lease_id: str) -> int:
 
 
 def count_pending_findings(lease_id: str) -> int:
+    """Undecided *discrepancy* findings (BR8: informational rows never need a decision)."""
     with db() as conn:
-        r = conn.execute("SELECT COUNT(*) c FROM findings WHERE lease_id=? AND approved IS NULL", (lease_id,)).fetchone()
+        r = conn.execute(
+            "SELECT COUNT(*) c FROM findings "
+            "WHERE lease_id=? AND approved IS NULL AND information_only=0",
+            (lease_id,),
+        ).fetchone()
         return int(r["c"]) if r else 0
 
 
@@ -174,25 +194,52 @@ def replace_findings_for_invoice(invoice_id: str, lease_id: str, findings: list[
         conn.execute("DELETE FROM findings WHERE invoice_id=? AND approved IS NULL", (invoice_id,))
         for f in findings:
             conn.execute(
-                """INSERT INTO findings(id,invoice_id,lease_id,check_type,status,billed_paise,expected_paise,difference_paise,reason,message,controlling_term_json,calculation,approved,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                """INSERT INTO findings(id,invoice_id,lease_id,check_type,status,billed_paise,expected_paise,difference_paise,reason,message,controlling_term_json,calculation,approved,information_only,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     f["id"], invoice_id, lease_id, f["check_type"], f["status"], f["billed_paise"],
                     f.get("expected_paise"), f.get("difference_paise"), f.get("reason"), f["message"],
                     jdump(f.get("controlling_term")) if f.get("controlling_term") else None,
-                    f.get("calculation", ""), f.get("approved"), now_iso(),
+                    f.get("calculation", ""), f.get("approved"),
+                    1 if f.get("informational") else 0, now_iso(),
                 ),
             )
 
 
+def _finding_row_to_dict(r: dict) -> dict:
+    """Normalise a findings row: JSON column, SQLite ints -> bools, legacy column default."""
+    out = dict(r)
+    out["controlling_term"] = jload(out.pop("controlling_term_json", None), None)
+    out["approved"] = None if out.get("approved") is None else bool(out["approved"])
+    out["informational"] = bool(out.pop("information_only", 0))
+    return out
+
+
 def list_findings(invoice_id: str) -> list[dict]:
     with db() as conn:
-        rows = rows_to_dicts(conn.execute("SELECT * FROM findings WHERE invoice_id=? ORDER BY created_at", (invoice_id,)).fetchall())
-    for r in rows:
-        r["controlling_term"] = jload(r.pop("controlling_term_json", None), None)
-        if r["approved"] is not None:
-            r["approved"] = bool(r["approved"])
-    return rows
+        rows = rows_to_dicts(conn.execute(
+            "SELECT * FROM findings WHERE invoice_id=? ORDER BY information_only, created_at",
+            (invoice_id,),
+        ).fetchall())
+    return [_finding_row_to_dict(r) for r in rows]
+
+
+def get_finding_for_user(finding_id: str, user_id: str) -> dict | None:
+    """Fetch a finding only if its lease belongs to user_id (BR11).
+
+    A finding is scoped by invoice -> lease -> user, so the join enforces ownership
+    rather than trusting the caller to have checked.
+    """
+    with db() as conn:
+        row = conn.execute(
+            """SELECT f.* FROM findings f
+               JOIN leases l ON l.id = f.lease_id
+               WHERE f.id=? AND l.user_id=?""",
+            (finding_id, user_id),
+        ).fetchone()
+    if not row:
+        return None
+    return _finding_row_to_dict(dict(row))
 
 
 def get_finding(finding_id: str) -> dict | None:
@@ -200,11 +247,7 @@ def get_finding(finding_id: str) -> dict | None:
         row = conn.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone()
         if not row:
             return None
-        r = dict(row)
-        r["controlling_term"] = jload(r.pop("controlling_term_json", None), None)
-        if r["approved"] is not None:
-            r["approved"] = bool(r["approved"])
-        return r
+        return _finding_row_to_dict(dict(row))
 
 
 def set_finding_decision(finding_id: str, user_id: str, approved: bool) -> dict | None:

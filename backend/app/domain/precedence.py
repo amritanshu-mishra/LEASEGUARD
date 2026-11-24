@@ -52,6 +52,24 @@ def controlling_term(terms: list[Term], term_type: TermType, period_start: date)
         return ControllingResult(term=None, reason=ReasonCode.TERM_NOT_FOUND)
 
     latest = max(t.effective_date for t in eligible)
+
+    # An ambiguous or unverified term dated *at or after* the controlling one could
+    # still change the answer. Silently falling back to the older clause would be a
+    # guess, so the result is uncertain instead (spec G4/G5, BR6).
+    later_unusable = [
+        t for t in terms
+        if t.term_type == term_type
+        and t.effective_date <= period_start
+        and t.effective_date >= latest
+        and (t.ambiguous or t.value is None or not t.validated)
+    ]
+    if later_unusable:
+        if any(t.ambiguous or t.value is None for t in later_unusable):
+            return ControllingResult(term=None, reason=ReasonCode.CLAUSE_AMBIGUOUS,
+                                     conflicts=sorted(later_unusable, key=lambda t: t.id))
+        return ControllingResult(term=None, reason=ReasonCode.QUOTE_UNVERIFIED,
+                                 conflicts=sorted(later_unusable, key=lambda t: t.id))
+
     top = [t for t in eligible if t.effective_date == latest]
     values = {t.value for t in top}
     if len(values) > 1:

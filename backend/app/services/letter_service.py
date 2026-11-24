@@ -74,7 +74,12 @@ def build_letter(
     identical in both languages — only the surrounding text is translated, because
     the clause quote must stay exactly as it appears in the document.
     """
-    approved = [f for f in findings if f.get("approved") is True]
+    # Defence in depth: a letter contains only findings the tenant approved AND that
+    # describe an actual discrepancy. Informational rows (BR8) can never appear.
+    approved = [
+        f for f in findings
+        if f.get("approved") is True and not f.get("informational")
+    ]
     if not approved:
         raise ValueError("No approved findings")
 

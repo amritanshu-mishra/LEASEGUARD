@@ -105,6 +105,12 @@ export const strings = {
   discrepancyBadge: { en: 'Discrepancy', hi: 'विसंगति' },
   uncertainBadge: { en: 'Uncertain', hi: 'अनिश्चित' },
   noIssueBadge: { en: 'No issue', hi: 'कोई समस्या नहीं' },
+  checkedNoAction: { en: 'Checked — no action needed', hi: 'जांच हो गई — कोई कार्रवाई आवश्यक नहीं' },
+  underchargeNote: {
+    en: 'This charge matches or is below the agreed rate, so it is shown for information only. It cannot be approved or added to a letter.',
+    hi: 'यह शुल्क तय दर के बराबर या कम है, इसलिए केवल जानकारी के लिए दिखाया गया है। इसे स्वीकृत नहीं किया जा सकता और न ही पत्र में जोड़ा जा सकता है।',
+  },
+  informational: { en: 'Information only', hi: 'केवल जानकारी' },
   difference: { en: 'difference', hi: 'अंतर' },
   needsReviewTitle: { en: 'needs review', hi: 'को समीक्षा चाहिए' },
   billed: { en: 'Billed', hi: 'बिल किया' },

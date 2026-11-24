@@ -133,5 +133,20 @@ def check_rent_escalation(
             message=msg, controlling_term=ct, calculation=calculation,
         )
 
-    # no issue (match or undercharge)
-    return None
+    # BR8: billed <= expected is not a discrepancy. Report it as information so the
+    # tenant sees the rent was checked, without offering an approval action.
+    if diff == 0:
+        msg = f"Rent matches the controlling term ({format_inr(expected)}). No action needed."
+    else:
+        msg = (
+            f"Rent is below the controlling term "
+            f"(expected {format_inr(expected)}, billed {format_inr(billed_rent_paise)}, "
+            f"under by {format_inr(-diff)}). No action needed."
+        )
+    return Finding(
+        id=finding_id, invoice_id=invoice_id, check_type=CheckType.RENT_ESCALATION,
+        status=FindingStatus.NO_ISSUE, billed_paise=billed_rent_paise,
+        expected_paise=expected, difference_paise=diff, reason=None,
+        message=msg, controlling_term=(_term_info(controlling_for_last) if controlling_for_last else _term_info(base_res.term)), calculation=calculation,
+        informational=True,
+    )

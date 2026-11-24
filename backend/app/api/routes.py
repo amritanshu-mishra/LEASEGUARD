@@ -28,6 +28,12 @@ class LeaseBody(BaseModel):
     as_of: str | None = None
 
 
+@router.get("/audit-log")
+def audit_log(limit: int = Query(default=50, ge=1, le=500)):
+    """The current user's action trail (BR10)."""
+    return {"events": store.list_audit_log(DEMO_USER_ID, limit=limit)}
+
+
 @router.get("/health")
 def health():
     return {"ok": True, "service": "leaseguard", "synthetic_demo": True}
@@ -153,9 +159,13 @@ def get_lease(lease_id: str, as_of: str = Query(default="2026-04-01")):
     # attach findings summary per invoice
     for inv in lease.get("invoices", []):
         findings = store.list_findings(inv["id"])
-        inv["findings_count"] = len(findings)
-        inv["confirmed_count"] = sum(1 for f in findings if f["status"] == "confirmed")
-        inv["uncertain_count"] = sum(1 for f in findings if f["status"] == "uncertain")
+        # Informational rows (BR8) are not discrepancies, so they are excluded from the
+        # counts that drive the "review needed" badge on the lease screen.
+        actionable = [f for f in findings if not f.get("informational")]
+        inv["findings_count"] = len(actionable)
+        inv["confirmed_count"] = sum(1 for f in actionable if f["status"] == "confirmed")
+        inv["uncertain_count"] = sum(1 for f in actionable if f["status"] == "uncertain")
+        inv["informational_count"] = len(findings) - len(actionable)
     return lease
 
 
@@ -197,11 +207,20 @@ def get_findings(invoice_id: str):
 
 @router.patch("/findings/{finding_id}")
 def decide_finding(finding_id: str, body: DecisionBody):
-    finding = store.get_finding(finding_id)
+    # BR11: look the finding up through its lease ownership, not by raw id.
+    finding = store.get_finding_for_user(finding_id, DEMO_USER_ID)
     if not finding:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Finding not found"}})
+    if finding.get("informational"):
+        raise HTTPException(status_code=409, detail={
+            "error": {"code": "informational_only",
+                      "message": "This charge was checked and needs no action, so it cannot be approved or rejected."}
+        })
     updated = store.set_finding_decision(finding_id, DEMO_USER_ID, body.approved)
-    store.log_event(DEMO_USER_ID, "finding_decision", "finding", finding_id)
+    store.log_event(
+        DEMO_USER_ID, "finding_decision", "finding", finding_id,
+        detail="approved" if body.approved else "rejected",
+    )
     return {"ok": True, "finding": updated}
 
 
@@ -214,7 +233,7 @@ def generate_letter(invoice_id: str, language: str = Query(default="en")):
     if not lease:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
     findings = store.list_findings(invoice_id)
-    approved = [f for f in findings if f.get("approved") is True]
+    approved = [f for f in findings if f.get("approved") is True and not f.get("informational")]
     if not approved:
         raise HTTPException(status_code=409, detail={"error": {"code": "no_approved_findings", "message": "Approve at least one finding before generating a letter."}})
     letter = build_letter(lease, invoice, findings, language=language)

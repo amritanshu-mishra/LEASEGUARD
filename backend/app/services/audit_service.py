@@ -100,6 +100,7 @@ def _finding_to_dict(f: Finding) -> dict:
         "controlling_term": ct,
         "calculation": f.calculation,
         "approved": f.approved,
+        "informational": getattr(f, "informational", False),
     }
 
 
@@ -155,8 +156,12 @@ def compute_impact(findings: list[dict]) -> dict:
       that a human still has to review. Labelled separately so nothing is overclaimed.
     - time_saved: transparent estimate, scaled by findings, with its basis shown.
     """
-    confirmed = [f for f in findings if f.get("status") == "confirmed"]
-    uncertain = [f for f in findings if f.get("status") == "uncertain"]
+    # BR8: informational rows (charges that matched or were below the agreed rate) are
+    # excluded from every money total. They must never inflate "excess detected".
+    billable = [f for f in findings if not f.get("informational")]
+    confirmed = [f for f in billable if f.get("status") == "confirmed"]
+    uncertain = [f for f in billable if f.get("status") == "uncertain"]
+    no_issue = [f for f in findings if f.get("status") == "no_issue"]
 
     excess = sum(int(f.get("difference_paise") or 0) for f in confirmed)
     # Uncertain items: we cannot compute a difference, so flag the billed amount under review.
@@ -167,7 +172,7 @@ def compute_impact(findings: list[dict]) -> dict:
     # +10 min if an amendment has to be cross-checked. Capped so the number stays modest.
     minutes = 0
     if findings:
-        minutes = min(90, 10 + 8 * len(confirmed) + 6 * len(uncertain))
+        minutes = min(90, 10 + 8 * len(confirmed) + 6 * len(uncertain) + 3 * len(no_issue))
 
     return {
         "excess_detected_paise": excess,
@@ -178,6 +183,7 @@ def compute_impact(findings: list[dict]) -> dict:
         "uncertain_billed_paise": uncertain_billed,
         "confirmed_count": len(confirmed),
         "uncertain_count": len(uncertain),
+        "no_issue_count": len(no_issue),
         "time_saved_minutes": minutes,
         "time_saved_display": f"~{minutes} min" if minutes else "0 min",
         "time_saved_basis": "Estimate: 10 min to read lease + invoice, 8 min per confirmed item, 6 min per uncertain item. Not money recovered.",

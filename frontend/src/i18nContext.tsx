@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { Lang, strings, t as translate, StringKey } from './i18n'
+import { Lang, t as translate, StringKey } from './i18n'
 
 type Ctx = {
   lang: Lang

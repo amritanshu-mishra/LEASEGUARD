@@ -78,7 +78,11 @@ def test_g3_clean_invoice_no_finding():
         make_term("e2", "Amendment 1", "amendment", "2026-01-01", TermType.ESCALATION_RATE_BP, 500),
     ]
     f = check_rent_escalation("f3", "inv1", date(2025, 4, 1), date(2026, 4, 1), 4200000, terms)
-    assert f is None
+    # BR8: a correct charge is reported as information, not as a discrepancy (G3).
+    assert f is not None
+    assert f.status is FindingStatus.NO_ISSUE
+    assert f.informational is True
+    assert f.difference_paise == 0
 
 
 def test_g6_amendment_not_yet_effective():
@@ -89,4 +93,7 @@ def test_g6_amendment_not_yet_effective():
     ]
     # April 2026 invoice: amendment effective July 2026, so lease 10% controls -> 44,000 is correct
     f = check_rent_escalation("f6", "inv1", date(2025, 4, 1), date(2026, 4, 1), 4400000, terms)
-    assert f is None
+    # G6: the future amendment does not control, so 44,000 is correct => information only.
+    assert f is not None
+    assert f.status is FindingStatus.NO_ISSUE
+    assert f.informational is True

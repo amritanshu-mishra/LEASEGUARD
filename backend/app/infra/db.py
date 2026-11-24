@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS findings (
   controlling_term_json TEXT,
   calculation TEXT NOT NULL DEFAULT '',
   approved INTEGER,
+  information_only INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -84,6 +85,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   action TEXT NOT NULL,
   entity TEXT NOT NULL,
   entity_id TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -102,10 +104,29 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release. `CREATE TABLE IF NOT EXISTS` does not alter an
+# existing table, so additive migrations are applied explicitly and idempotently here.
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    # (table, column, column DDL)
+    ("findings", "information_only", "INTEGER NOT NULL DEFAULT 0"),
+    ("audit_log", "detail", "TEXT NOT NULL DEFAULT ''"),
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, ddl in _MIGRATIONS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue  # table created fresh by SCHEMA, already has the column
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def init_db() -> None:
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     with _connect() as conn:
         conn.executescript(SCHEMA)
+        _apply_migrations(conn)
 
 
 @contextmanager

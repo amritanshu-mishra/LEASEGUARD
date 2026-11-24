@@ -58,11 +58,19 @@ export default function AuditPage() {
     finally { setBusyId(null) }
   }
 
-  const approvedCount = useMemo(() => findings.filter(f => f.approved === true).length, [findings])
-  const confirmedCount = findings.filter(f => f.status === 'confirmed').length
-  const uncertainCount = findings.filter(f => f.status === 'uncertain').length
+  const actionable = useMemo(() => findings.filter(f => !f.informational), [findings])
+  const approvedCount = useMemo(() => actionable.filter(f => f.approved === true).length, [actionable])
+  const confirmedCount = actionable.filter(f => f.status === 'confirmed').length
+  const uncertainCount = actionable.filter(f => f.status === 'uncertain').length
+  const noIssueCount = findings.filter(f => f.informational || f.status === 'no_issue').length
 
-  if (loading) return <div className="loading">{t('loadingAudit')}</div>
+  if (loading) {
+    return (
+      <div className="loading" role="status" aria-live="polite">
+        {t('loadingAudit')}
+      </div>
+    )
+  }
 
   const checkLabel = (ct: string) =>
     ct === 'rent_escalation' ? t('escalation') : ct === 'maintenance_cap' ? t('maintenanceCap') : ct.replace(/_/g, ' ')
@@ -82,14 +90,18 @@ export default function AuditPage() {
         </div>
       </div>
 
-      {err && <div className="error" style={{ marginBottom: 16 }}>{err}</div>}
+      {err && (
+        <div className="error" role="alert" aria-live="assertive" style={{ marginBottom: 16 }}>
+          {err}
+        </div>
+      )}
 
       {impact && (
         <div style={{ marginBottom: 16 }}>
           <div className="info" style={{ marginBottom: 12 }}>
             <strong>{t('impactTitle')}:</strong> {t('impactNote')}
           </div>
-          <div className="stat-grid">
+          <div className="stat-grid" role="group" aria-label={t('impactTitle')}>
             <div className="stat">
               <div className="stat-label">{t('excessDetected')}</div>
               <div className={`stat-value ${impact.excess_detected_paise > 0 ? 'red' : 'green'}`}>{impact.excess_detected_display}</div>
@@ -108,8 +120,12 @@ export default function AuditPage() {
             <div className="stat">
               <div className="stat-label">{t('findings')}</div>
               <div className="stat-value">{confirmedCount + uncertainCount}</div>
-              <div className="stat-note">{confirmedCount} {t('findingsNote')} {uncertainCount} {t('needsInput')}</div>
+              <div className="stat-note">
+                {confirmedCount} {t('findingsNote')} {uncertainCount} {t('needsInput')}
+                {noIssueCount > 0 && ` · ${noIssueCount} ${t('checkedNoAction').toLowerCase()}`}
+              </div>
             </div>
+
           </div>
         </div>
       )}
@@ -134,45 +150,63 @@ export default function AuditPage() {
         </div>
       )}
 
-      <h2 className="section-title">{t('findings')}</h2>
+      <h2 className="section-title" id="findings-heading">{t('findings')}</h2>
       {findings.length === 0 && <div className="empty">{t('noFindings')}</div>}
 
       {findings.map((f: any) => {
         const ct = f.controlling_term || {}
         const isConfirmed = f.status === 'confirmed'
         const isUncertain = f.status === 'uncertain'
+        const isInfo = !!f.informational || f.status === 'no_issue'
         const quoteOpen = viewQuote[f.id] ?? true
         return (
-          <div key={f.id} className={`finding ${isConfirmed ? 'confirmed' : isUncertain ? 'uncertain' : 'no_issue'}`}>
+          <article
+            key={f.id}
+            className={`finding ${isConfirmed ? 'confirmed' : isUncertain ? 'uncertain' : 'no_issue'}`}
+            aria-labelledby={`finding-title-${f.id}`}
+          >
+            {isInfo && (
+              <div className="badge badge-green" style={{ marginBottom: 10 }}>
+                ✓ {t('checkedNoAction')}
+              </div>
+            )}
             <div className="finding-head">
               <div>
                 <div style={{ marginBottom: 6 }}>
                   <span className={`badge ${isConfirmed ? 'badge-red' : isUncertain ? 'badge-amber' : 'badge-green'}`}>
                     {isConfirmed ? `⚠ ${t('discrepancyBadge')}` : isUncertain ? `? ${t('uncertainBadge')}` : `✓ ${t('noIssueBadge')}`}
                   </span>
+                  {isInfo && <span className="badge badge-gray" style={{ marginLeft: 8 }}>{t('informational')}</span>}
                   <span className="badge badge-gray" style={{ marginLeft: 8 }}>{checkLabel(f.check_type)}</span>
                 </div>
-                <h3 className="finding-title">
+                <h3 className="finding-title" id={`finding-title-${f.id}`}>
                   {isConfirmed
                     ? `${checkLabel(f.check_type)}: ${t('difference')} ${inr(f.difference_paise)}`
-                    : `${checkLabel(f.check_type)} ${t('needsReviewTitle')}`}
+                    : isUncertain
+                      ? `${checkLabel(f.check_type)} ${t('needsReviewTitle')}`
+                      : `${checkLabel(f.check_type)} — ${t('noIssueBadge')}`}
                 </h3>
               </div>
-              <div className="row">
-                <button
-                  className={`btn btn-sm ${f.approved === true ? 'btn-primary' : 'btn-secondary'}`}
-                  disabled={busyId === f.id || f.status !== 'confirmed'}
-                  onClick={() => decide(f.id, true)}
-                >✓ {t('approve')}</button>
-                <button
-                  className={`btn btn-sm ${f.approved === false ? 'btn-danger' : 'btn-ghost'}`}
-                  disabled={busyId === f.id}
-                  onClick={() => decide(f.id, false)}
-                >✕ {t('reject')}</button>
-              </div>
+              {!isInfo && (
+                <div className="row">
+                  <button
+                    className={`btn btn-sm ${f.approved === true ? 'btn-primary' : 'btn-secondary'}`}
+                    disabled={busyId === f.id || f.status !== 'confirmed'}
+                    onClick={() => decide(f.id, true)}
+                    aria-label={`${t('approve')} — ${checkLabel(f.check_type)}`}
+                  >✓ {t('approve')}</button>
+                  <button
+                    className={`btn btn-sm ${f.approved === false ? 'btn-danger' : 'btn-ghost'}`}
+                    disabled={busyId === f.id}
+                    onClick={() => decide(f.id, false)}
+                    aria-label={`${t('reject')} — ${checkLabel(f.check_type)}`}
+                  >✕ {t('reject')}</button>
+                </div>
+              )}
             </div>
 
             <p className="finding-msg">{f.message}</p>
+            {isInfo && <p className="muted" style={{ fontSize: 13, marginTop: -6, marginBottom: 14 }}>{t('underchargeNote')}</p>}
 
             <div className="amounts">
               <div className="amount-box"><div className="amount-label">{t('billed')}</div><div className="amount-val">{inr(f.billed_paise)}</div></div>
@@ -209,7 +243,7 @@ export default function AuditPage() {
 
             {f.approved === true && <div className="badge badge-green">{t('inLetter')}</div>}
             {f.approved === false && <div className="badge badge-gray">{t('rejected')}</div>}
-          </div>
+          </article>
         )
       })}
 

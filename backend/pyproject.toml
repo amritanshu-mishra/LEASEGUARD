@@ -1,0 +1,19 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    # Starlette's TestClient still uses the deprecated anyio BlockingPortal alias; harmless.
+    "ignore:.*BlockingPortal.*:DeprecationWarning",
+    # FastAPI recommends lifespan handlers; on_event is kept for a single startup hook.
+    "ignore:.*on_event is deprecated.*:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["app/domain", "app/services"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]

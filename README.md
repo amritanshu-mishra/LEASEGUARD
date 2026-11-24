@@ -100,7 +100,10 @@ this repository.
 | **WhatsApp share, not PDF download** | `frontend/src/pages/LetterPage.tsx` — `wa.me/?text=…` with the letter pre-filled, plus copy-to-clipboard. The tenant presses send; nothing is automated |
 | **Hindi on key screens** | `frontend/src/i18n.ts` — ~110 EN/HI strings; EN/हिंदी toggle in the header, 9+ Hindi buttons, and a **Hindi dispute letter** for forwarding |
 | **Evidence UI** | Every finding shows document name, page, effective date, verbatim clause quote and the full calculation string (`AuditPage.tsx`) |
-| **Impact metric** | `backend/app/services/audit_service.py#compute_impact` — excess detected, amount flagged, time saved, explicit "does not claim money recovered" |
+| **Impact metric** | `backend/app/services/audit_service.py#compute_impact` — excess detected, amount flagged, time saved, explicit "does not claim money recovered". Informational rows are excluded from every total (BR8) |
+
+A rule-by-rule conformance table, including the two bugs this audit found and fixed, is in
+[`docs/SPEC_CONFORMANCE.md`](docs/SPEC_CONFORMANCE.md).
 
 ---
 
@@ -172,15 +175,24 @@ Base path `/api`. JSON in, JSON out.
 
 ```bash
 cd backend
-PYTHONPATH=. pytest -q          # 14 tests
+PYTHONPATH=. pytest -q                                    # 48 tests
+PYTHONPATH=. pytest -q --cov=app.domain --cov=app.services --cov-fail-under=90
 ```
 
-- `tests/domain/test_core.py` — money rounding/formatting, precedence (latest wins, conflict,
-  not-yet-effective), escalation and maintenance-cap logic.
-- `tests/api/test_flow.py` — upload → audit → approve → letter over HTTP, duplicate upload
-  rejection, unreadable-file rejection, letter blocked before approval, rejected findings
-  excluded from the letter, and a check that the cited PDF page numbers really contain the
-  quoted clauses.
+**48 tests, 94% branch coverage** on the domain + service layers (the spec target is 90%).
+CI runs the same gate on every push (`.github/workflows/ci.yml`).
+
+- `tests/domain/test_golden_cases.py` — the spec's golden cases **G1–G6** and unit cases
+  **U1–U2**, plus BR1/BR2/BR7/BR8 rules, written as the spec states them.
+- `tests/domain/test_services.py` — the honesty rules: impact metric never inflates or
+  claims recovery; letters refuse unapproved findings, never include informational rows,
+  always carry the five evidence fields, and keep clause quotes untranslated in Hindi.
+- `tests/domain/test_core.py` — money rounding/formatting, precedence, escalation and
+  maintenance-cap logic.
+- `tests/api/test_flow.py` — upload → audit → approve → letter over HTTP, clean-invoice and
+  undercharge handling, duplicate/unreadable upload rejection, letter blocked before
+  approval, audit-log contents, cross-user isolation, and a check that the cited PDF page
+  numbers really contain the quoted clauses.
 
 ---
 
@@ -218,6 +230,8 @@ samples/                   the three synthetic PDFs
 - [`docs/PROBLEM_BRIEF.md`](docs/PROBLEM_BRIEF.md) — problem, users, failure modes, success criteria
 - [`docs/VALUE_AND_ADOPTION.md`](docs/VALUE_AND_ADOPTION.md) — value, impact metric definitions, adoption plan, risks, judged-criteria map
 - [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) — shot-by-shot demo/video plan
+- [`docs/SPEC_CONFORMANCE.md`](docs/SPEC_CONFORMANCE.md) — every business rule, golden case and
+  non-functional target mapped to the code, including deliberate departures and known gaps
 
 ---
 
@@ -231,6 +245,9 @@ samples/                   the three synthetic PDFs
   the storage layer is user-scoped so this is a schema change, not a rewrite.
 - **Two checks implemented.** Rent escalation and maintenance cap. The precedence engine and
   evidence model generalise to deposits, late fees and GST, which is the next step.
+- **No authentication.** One demo user. Finding lookups are lease-scoped, so the data layer
+  is ready for a `user_id` claim, but there is no login. Judges should read this as a scoped
+  demo, not a shipped multi-tenant product.
 
 ---
 

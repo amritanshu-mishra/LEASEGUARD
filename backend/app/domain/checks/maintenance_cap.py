@@ -61,4 +61,25 @@ def check_maintenance_cap(
             controlling_term=_term_info(res.term),
             calculation=calc,
         )
-    return None
+
+    # BR8: billed <= cap is not a discrepancy. It is reported as information so the
+    # tenant can see the charge was checked, but it never enters a letter or the impact
+    # total, and it carries no approve/reject action.
+    if diff == 0:
+        msg = (
+            f"Maintenance matches the agreed cap of {format_inr(cap)}. "
+            "No action needed."
+        )
+    else:
+        msg = (
+            f"Maintenance is below the agreed cap of {format_inr(cap)} "
+            f"(billed {format_inr(billed_maintenance_paise)}, under by {format_inr(-diff)}). "
+            "No action needed."
+        )
+    return Finding(
+        id=finding_id, invoice_id=invoice_id, check_type=CheckType.MAINTENANCE_CAP,
+        status=FindingStatus.NO_ISSUE, billed_paise=billed_maintenance_paise,
+        expected_paise=cap, difference_paise=diff, reason=None,
+        message=msg, controlling_term=_term_info(res.term),
+        calculation=calc, informational=True,
+    )
