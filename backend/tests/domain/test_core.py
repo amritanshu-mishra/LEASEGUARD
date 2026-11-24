@@ -47,6 +47,42 @@ def test_precedence_conflict():
     assert res.reason == ReasonCode.CONFLICTING_TERMS
 
 
+def test_a_user_choice_settles_a_conflict_instead_of_joining_it():
+    """Regression: "Use this clause" used to leave the row uncertain.
+
+    The chosen value joined the two conflicting amendments in a three-way tie,
+    so the audit still reported a conflict and the button appeared to do nothing.
+    """
+    terms = [
+        make_term("a1", "A1", "amendment", "2026-01-01", TermType.ESCALATION_RATE_BP, 500),
+        make_term("a2", "A2", "amendment", "2026-01-01", TermType.ESCALATION_RATE_BP, 700),
+        Term(
+            id="u", document_id=None, document_name="", document_kind=DocumentKind.LEASE,
+            effective_date=date(2026, 1, 1), term_type=TermType.ESCALATION_RATE_BP, value=500,
+            source_quote="chosen", page=1, confidence=1.0, entered_by_user=True,
+        ),
+    ]
+    res = controlling_term(terms, TermType.ESCALATION_RATE_BP, date(2026, 4, 1))
+    assert res.ok and res.term is not None
+    assert res.term.id == "u"
+    assert res.term.value == 500
+
+
+def test_a_stale_user_choice_does_not_override_a_newer_clause():
+    """The choice settles today's contradiction; it is not a permanent override."""
+    terms = [
+        make_term("a1", "A1", "amendment", "2027-01-01", TermType.ESCALATION_RATE_BP, 500),
+        Term(
+            id="u", document_id=None, document_name="", document_kind=DocumentKind.LEASE,
+            effective_date=date(2025, 4, 1), term_type=TermType.ESCALATION_RATE_BP, value=800,
+            source_quote="chosen", page=1, confidence=1.0, entered_by_user=True,
+        ),
+    ]
+    # As of the later amendment, the amendment controls - the older choice does not.
+    res = controlling_term(terms, TermType.ESCALATION_RATE_BP, date(2027, 6, 1))
+    assert res.ok and res.term is not None and res.term.id == "a1"
+
+
 def test_g1_amendment_caps_escalation():
     terms = [
         make_term("b", "Lease", "lease", "2025-04-01", TermType.BASE_RENT_PAISE, 4000000, "Monthly Rent of Rs. 40,000", 2),

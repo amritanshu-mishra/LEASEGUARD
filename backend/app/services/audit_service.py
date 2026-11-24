@@ -17,11 +17,16 @@ def _parse_date(s: str) -> date:
 
 
 def _term_from_row(r: dict) -> Term:
+    # A term the tenant typed in has no document, so document_kind is NULL/''.
+    # Falling back to "lease" is honest here: it means "stated for this lease",
+    # and `entered_by_user` is what the UI reads to avoid citing a file.
+    raw_kind = (r.get("document_kind") or "").strip()
+    kind = DocumentKind(raw_kind) if raw_kind in {k.value for k in DocumentKind} else DocumentKind.LEASE
     return Term(
         id=r["id"],
-        document_id=r["document_id"],
-        document_name=r.get("document_name", ""),
-        document_kind=DocumentKind(r.get("document_kind", "lease")),
+        document_id=r.get("document_id"),
+        document_name=r.get("document_name") or "",
+        document_kind=kind,
         effective_date=_parse_date(r["effective_date"]),
         term_type=TermType(r["term_type"]),
         value=r.get("value_integer"),
@@ -31,6 +36,7 @@ def _term_from_row(r: dict) -> Term:
         validated=bool(r.get("validated", True)),
         ambiguous=bool(r.get("ambiguous", False)),
         corrected_by_user=bool(r.get("corrected_by_user", False)),
+        entered_by_user=bool(r.get("entered_by_user", False)),
     )
 
 
@@ -57,6 +63,11 @@ def terms_in_force(lease_id: str, as_of: str) -> list[dict]:
                 "document_kind": t.document_kind.value,
                 "effective_date": t.effective_date.isoformat(),
                 "corrected_by_user": t.corrected_by_user,
+                "entered_by_user": t.entered_by_user,
+                # A typed value has no document to cite. Say so rather than
+                # rendering a blank filename next to a real-looking amount.
+                "document_name": "" if t.entered_by_user else t.document_name,
+                "page": None if t.entered_by_user else t.page,
             })
         else:
             item["reason"] = res.reason.value if res.reason else "term_not_found"

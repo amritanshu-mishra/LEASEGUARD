@@ -180,10 +180,42 @@ async def extract_terms(pages: list[str], doc_kind: str) -> dict[str, Any]:
 
 
 def extract_invoice(pages: list[str]) -> dict[str, Any]:
+    """Read billed amounts, and verify every one against the document text.
+
+    Invoice figures used to go straight into the audit unchecked, while lease
+    terms were gated. That was the weakest link in the honesty story: a single
+    misread bill amount would produce a confident, wrong discrepancy with no way
+    for a judge - or a tenant - to tell it apart from a real one.
+
+    A line item now carries the text it came from, and the same `validate_quote`
+    gate that protects terms is applied to it. Anything that fails is returned
+    with `verified: False` and a confidence of 0, and the caller surfaces it
+    rather than billing it as evidence.
+    """
     full_text = "\n\n".join(pages)
     items = heuristics.parse_invoice_line_items(pages)
     period_label = heuristics.parse_period_label(full_text)
-    return {"line_items": items, "period_label": period_label, "extractor": "heuristic"}
+
+    unverified: list[str] = []
+    for item in items:
+        quote = item.get("source_quote", "")
+        ok = bool(quote) and validate_quote(quote, full_text)
+        # Check the number itself, not only the line: a quote could pass while
+        # the parsed amount was read from the wrong token.
+        if ok:
+            number = f"{item['amount_paise'] // 100:,}"
+            ok = number in quote or number.replace(",", "") in quote.replace(",", "")
+        item["verified"] = ok
+        item["confidence"] = 1.0 if ok else 0.0
+        if not ok:
+            unverified.append(item.get("description", ""))
+
+    return {
+        "line_items": items,
+        "period_label": period_label,
+        "extractor": "heuristic",
+        "unverified_items": unverified,
+    }
 
 
 # --- Fixtures (used ONLY by the labelled synthetic sample case) ---------------

@@ -587,7 +587,7 @@ def parse_invoice_line_items(pages: list[str]) -> list[dict[str, Any]]:
     """Parse 'description ... Rs. amount' lines from an invoice. Conservative."""
     items: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
-    for page in pages:
+    for page_number, page in enumerate(pages, start=1):
         for raw in page.splitlines():
             line = raw.strip(" \t•-*")
             if not line:
@@ -607,7 +607,16 @@ def parse_invoice_line_items(pages: list[str]) -> list[dict[str, Any]]:
             if key in seen:
                 continue
             seen.add(key)
-            items.append({"description": desc[:120], "amount_paise": amount, "kind": _kind_for(desc)})
+            items.append({
+                "description": desc[:120],
+                "amount_paise": amount,
+                "kind": _kind_for(desc),
+                # The verbatim line this amount was read from. Kept so the invoice
+                # gets the same quote gate the lease terms get: a figure the gate
+                # cannot find in the document is not allowed to drive an audit.
+                "source_quote": line[:400],
+                "page": page_number,
+            })
     return items
 
 

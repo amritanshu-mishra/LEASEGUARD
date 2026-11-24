@@ -225,6 +225,22 @@ export const strings = {
   viewAudit: { en: 'View audit', hi: 'जांच देखें' },
   showTermsAsOf: { en: 'Show terms as of', hi: 'इस तिथि पर शर्तें दिखाएं' },
   fixValue: { en: 'Fix', hi: 'सुधारें' },
+  provideValue: { en: 'Enter value', hi: 'मान भरें' },
+  enteredByYou: { en: 'entered by you', hi: 'आपके द्वारा दर्ज' },
+  enteredHint: {
+    en: 'You typed this value because the document did not settle it. It is not a quote from the file.',
+    hi: 'यह मान आपने भरा है क्योंकि दस्तावेज़ से यह तय नहीं हुआ। यह फ़ाइल से उद्धरण नहीं है।',
+  },
+  enterValuePrompt: {
+    en: 'The document did not settle this. Enter the value you are actually being charged or that your lease states:',
+    hi: 'दस्तावेज़ से यह तय नहीं हुआ। वह मान भरें जो वास्तव में लिया जा रहा है या आपके अनुबंध में लिखा है:',
+  },
+  useThisClause: { en: 'Use this clause', hi: 'यह शर्त लें' },
+  conflictingClauses: {
+    en: 'Two clauses contradict each other. Choose the one that applies:',
+    hi: 'दो शर्तें एक-दूसरे का खंडन करती हैं। जो लागू होती है उसे चुनें:',
+  },
+  valueSaved: { en: 'Saved. The audit has been re-run.', hi: 'सहेजा गया। जांच दोबारा चलाई गई।' },
   correctValue: { en: 'Correct value', hi: 'सही मान' },
   correctedByYou: { en: 'corrected by you', hi: 'आपने सुधारा' },
   correctedHint: {

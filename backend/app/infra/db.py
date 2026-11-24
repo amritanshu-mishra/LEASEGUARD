@@ -32,8 +32,11 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE TABLE IF NOT EXISTS terms (
+  -- document_id is NULL for a value the tenant typed in themselves, because such
+  -- a value has no document to point at, and pretending otherwise would be a lie
+  -- of exactly the kind this product exists to prevent.
   id TEXT PRIMARY KEY,
-  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
   lease_id TEXT NOT NULL REFERENCES leases(id) ON DELETE CASCADE,
   term_type TEXT NOT NULL,
   value_integer INTEGER,
@@ -41,7 +44,11 @@ CREATE TABLE IF NOT EXISTS terms (
   page INTEGER NOT NULL DEFAULT 1,
   confidence REAL NOT NULL DEFAULT 1.0,
   validated INTEGER NOT NULL DEFAULT 1,
-  ambiguous INTEGER NOT NULL DEFAULT 0
+  ambiguous INTEGER NOT NULL DEFAULT 0,
+  corrected_by_user INTEGER NOT NULL DEFAULT 0,
+  corrected_at TEXT NOT NULL DEFAULT '',
+  entered_by_user INTEGER NOT NULL DEFAULT 0,
+  user_effective_date TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS invoices (
@@ -122,7 +129,71 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # saying "read from a scan" after a reload, not just in the upload response.
     ("documents", "ocr", "INTEGER NOT NULL DEFAULT 0"),
     ("documents", "ocr_confidence", "REAL NOT NULL DEFAULT 1.0"),
+    # A value the tenant typed because the document was silent or contradictory.
+    # The spec lets a user resolve an uncertain term; until now there was nowhere
+    # to put the answer, and no document to attribute it to.
+    ("terms", "entered_by_user", "INTEGER NOT NULL DEFAULT 0"),
+    # When the tenant said it. Separate from a document's effective date: a
+    # choice made today must not be dated to the lease start, or it loses to the
+    # very amendments it is meant to settle.
+    ("terms", "user_effective_date", "TEXT NOT NULL DEFAULT ''"),
 ]
+
+
+# Migrations that cannot be expressed as ADD COLUMN. SQLite has no
+# "ALTER COLUMN", so a table that needs a nullable column rebuilt has to be
+# copied. Each one runs once and is detected by inspecting the schema.
+def _rebuild_terms_for_user_entered(conn: sqlite3.Connection) -> None:
+    """Make terms.document_id nullable, so a tenant-entered value can be stored.
+
+    Guarded by inspecting the live schema rather than a version table: this app
+    has one database file and no migration framework, and a check that reads the
+    actual table cannot drift from it.
+    """
+    cols = {row[1]: row for row in conn.execute("PRAGMA table_info(terms)")}
+    if not cols:
+        return  # fresh database; SCHEMA already has the right shape
+    # row shape is (cid, name, type, notnull, dflt_value, pk)
+    if cols["document_id"][3] == 0:
+        return  # already nullable
+
+    conn.executescript(
+        """
+        PRAGMA foreign_keys=OFF;
+        BEGIN;
+        CREATE TABLE terms_new (
+          id TEXT PRIMARY KEY,
+          document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
+          lease_id TEXT NOT NULL REFERENCES leases(id) ON DELETE CASCADE,
+          term_type TEXT NOT NULL,
+          value_integer INTEGER,
+          source_quote TEXT NOT NULL DEFAULT '',
+          page INTEGER NOT NULL DEFAULT 1,
+          confidence REAL NOT NULL DEFAULT 1.0,
+          validated INTEGER NOT NULL DEFAULT 1,
+          ambiguous INTEGER NOT NULL DEFAULT 0,
+          corrected_by_user INTEGER NOT NULL DEFAULT 0,
+          corrected_at TEXT NOT NULL DEFAULT '',
+          entered_by_user INTEGER NOT NULL DEFAULT 0,
+          user_effective_date TEXT NOT NULL DEFAULT ''
+        );
+        INSERT INTO terms_new (id, document_id, lease_id, term_type, value_integer,
+                               source_quote, page, confidence, validated, ambiguous,
+                               corrected_by_user, corrected_at, entered_by_user,
+                               user_effective_date)
+        SELECT id, document_id, lease_id, term_type, value_integer,
+               source_quote, page, confidence, validated, ambiguous,
+               COALESCE(corrected_by_user, 0), COALESCE(corrected_at, ''), 0, ''
+        FROM terms;
+        DROP TABLE terms;
+        ALTER TABLE terms_new RENAME TO terms;
+        COMMIT;
+        PRAGMA foreign_keys=ON;
+        """
+    )
+
+
+_STEP_MIGRATIONS = (_rebuild_terms_for_user_entered,)
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -132,6 +203,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             continue  # table created fresh by SCHEMA, already has the column
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    for migrate in _STEP_MIGRATIONS:
+        migrate(conn)
 
 
 _initialised = False
@@ -153,6 +227,10 @@ def init_db(force: bool = False) -> None:
     with _connect() as conn:
         conn.executescript(SCHEMA)
         _apply_migrations(conn)
+        # Re-run SCHEMA after a table rebuild: dropping and renaming a table drops
+        # its indexes with it, and CREATE INDEX IF NOT EXISTS is idempotent, so
+        # this restores them without duplicating anything.
+        conn.executescript(SCHEMA)
     _initialised = True
 
 

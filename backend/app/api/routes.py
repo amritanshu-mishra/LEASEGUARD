@@ -28,6 +28,26 @@ class CorrectionBody(BaseModel):
     note: str | None = None
 
 
+class UserTermBody(BaseModel):
+    """A value the tenant states because the document is silent or contradictory."""
+
+    term_type: str
+    value: int
+    note: str | None = None
+    # The date from which this applies. Defaults to today - see the endpoint.
+    effective_date: str | None = None
+
+
+# Term types a tenant may supply. Deliberately a short, explicit list: this
+# endpoint creates evidence, so it should not be a general-purpose write.
+_USER_SUPPLIABLE = {
+    "base_rent_paise",
+    "escalation_rate_bp",
+    "escalation_cadence_months",
+    "maintenance_cap_paise",
+}
+
+
 class LeaseBody(BaseModel):
     property_label: str
     start_date: str | None = None
@@ -187,6 +207,16 @@ async def upload_document(
             invoice_warnings.append(
                 "No maintenance/CAM line was found. Only rent will be checked for this invoice."
             )
+        # A billed amount we cannot find in the document must not quietly become
+        # evidence. Say so now, while the tenant is looking at the file.
+        unverified = parsed.get("unverified_items") or []
+        if unverified:
+            invoice_warnings.append(
+                "These amounts could not be verified against the document text: "
+                + ", ".join(unverified[:5])
+                + (", and others." if len(unverified) > 5 else ".")
+                + " Check them before approving anything based on them."
+            )
         response.update({
             "invoice_id": invoice["id"], "line_items": parsed["line_items"],
             "period_label": label, "extractor": parsed["extractor"], "invoice": invoice,
@@ -295,6 +325,50 @@ def correct_term(term_id: str, body: CorrectionBody, user_id: str = Depends(curr
     store.log_event(user_id, "term_corrected", "term", term_id,
                     detail=f"{existing['term_type']} -> {body.value}")
     return {"ok": True, "term": updated}
+
+
+@router.post("/leases/{lease_id}/terms")
+def add_user_term(lease_id: str, body: UserTermBody, user_id: str = Depends(current_user)):
+    """Record a value the tenant supplies for a term we could not resolve.
+
+    This closes a dead end the spec left open: a term can come back `uncertain`
+    because the clause was missing or two amendments contradicted each other, and
+    the screen said so with no way forward. The tenant can now state the value.
+
+    It is stored as *entered by you*, with no document attached, and the audit
+    still distinguishes it from a quoted clause - so this cannot be used to make
+    the product look more certain than it is.
+    """
+    lease = store.get_lease(lease_id, user_id)
+    if not lease:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    if body.term_type not in _USER_SUPPLIABLE:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "unsupported_term_type",
+                      "message": f"Term type must be one of: {', '.join(sorted(_USER_SUPPLIABLE))}."}})
+    if body.value < 0:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_value", "message": "A term value cannot be negative."}})
+    if body.term_type == "escalation_rate_bp" and body.value > 10_000:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_value", "message": "An escalation rate above 100% is almost certainly a typo."}})
+
+    if body.effective_date:
+        try:
+            date.fromisoformat(body.effective_date)
+        except ValueError:
+            raise HTTPException(status_code=422, detail={
+                "error": {"code": "invalid_date",
+                          "message": "effective_date must be YYYY-MM-DD."}}) from None
+
+    term = store.record_user_term(
+        lease_id, user_id, body.term_type, body.value, body.note or "", body.effective_date
+    )
+    if not term:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    store.log_event(user_id, "term_entered_by_user", "term", term["id"],
+                    detail=f"{body.term_type} = {body.value}")
+    return {"ok": True, "term": term}
 
 
 @router.post("/leases/{lease_id}/audit")

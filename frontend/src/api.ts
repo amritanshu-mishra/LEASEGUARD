@@ -27,6 +27,13 @@ export const api = {
   listAuditLog: (limit = 100) => request<any>(`/api/audit-log?limit=${limit}`),
   correctTerm: (termId: string, value: number | null, note?: string) =>
     request<any>(`/api/terms/${termId}`, { method: 'PATCH', body: JSON.stringify({ value, note }) }),
+  // For a term the document could not settle: the tenant states the value and it
+  // is recorded as theirs, with no document attached.
+  addUserTerm: (leaseId: string, termType: string, value: number, note?: string, effectiveDate?: string) =>
+    request<any>(`/api/leases/${leaseId}/terms`, {
+      method: 'POST',
+      body: JSON.stringify({ term_type: termType, value, note, effective_date: effectiveDate }),
+    }),
   deleteLease: (leaseId: string) => request<any>(`/api/leases/${leaseId}`, { method: 'DELETE' }),
   createLease: (body: { property_label: string; start_date?: string; end_date?: string }) =>
     request<any>('/api/leases', { method: 'POST', body: JSON.stringify(body) }),

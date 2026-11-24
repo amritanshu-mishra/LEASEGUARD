@@ -71,6 +71,15 @@ def controlling_term(terms: list[Term], term_type: TermType, period_start: date)
                                  conflicts=sorted(later_unusable, key=lambda t: t.id))
 
     top = [t for t in eligible if t.effective_date == latest]
+
+    # A value the tenant stated themselves settles a contradiction; it does not
+    # join one. Without this, "Use this clause" on two conflicting amendments
+    # produced a three-way conflict (both clauses plus the choice) and the screen
+    # stayed uncertain - the button did nothing visible.
+    user_chosen = [t for t in top if t.entered_by_user]
+    if user_chosen:
+        return ControllingResult(term=sorted(user_chosen, key=lambda t: t.id)[0])
+
     values = {t.value for t in top}
     if len(values) > 1:
         return ControllingResult(term=None, reason=ReasonCode.CONFLICTING_TERMS, conflicts=top)

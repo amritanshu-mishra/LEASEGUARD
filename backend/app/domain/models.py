@@ -32,7 +32,10 @@ class CheckType(str, Enum):
 @dataclass
 class Term:
     id: str
-    document_id: str
+    # None when the tenant supplied the value themselves: there is no document
+    # to point at, and inventing one would misrepresent a typed number as
+    # document evidence.
+    document_id: Optional[str]
     document_name: str
     document_kind: DocumentKind
     effective_date: date
@@ -47,6 +50,10 @@ class Term:
     # machine-extracted quote so the UI never presents a hand-entered number as
     # document evidence.
     corrected_by_user: bool = False
+    # True when the tenant typed the value in because the document was silent or
+    # contradictory. Such a term has no document and no page, and must never be
+    # rendered as if it were quoted from a file.
+    entered_by_user: bool = False
 
 
 @dataclass

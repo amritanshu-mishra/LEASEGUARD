@@ -233,14 +233,24 @@ def replace_terms_for_document(document_id: str, lease_id: str, terms: list[dict
 def list_terms(lease_id: str) -> list[dict]:
     with db() as conn:
         rows = rows_to_dicts(conn.execute(
-            """SELECT t.*, d.name as document_name, d.kind as document_kind, d.effective_date, d.text_content as document_text
-               FROM terms t JOIN documents d ON d.id=t.document_id WHERE t.lease_id=? ORDER BY d.effective_date""",
+            """SELECT t.*, d.name as document_name, d.kind as document_kind,
+                      COALESCE(NULLIF(t.user_effective_date,''), d.effective_date, l.start_date) as effective_date,
+                      d.text_content as document_text
+               FROM terms t
+               LEFT JOIN documents d ON d.id=t.document_id
+               JOIN leases l ON l.id=t.lease_id
+               WHERE t.lease_id=? ORDER BY COALESCE(NULLIF(t.user_effective_date,''), d.effective_date, l.start_date)""",
             (lease_id,),
         ).fetchall())
     for r in rows:
         r["validated"] = bool(r["validated"])
         r["ambiguous"] = bool(r["ambiguous"])
         r["corrected_by_user"] = bool(r.get("corrected_by_user"))
+        r["entered_by_user"] = bool(r.get("entered_by_user"))
+        # Never let a typed value look like it came from a file.
+        if r["entered_by_user"]:
+            r["document_name"] = ""
+            r["document_kind"] = ""
     return rows
 
 
@@ -385,14 +395,65 @@ def get_term_for_user(term_id: str, user_id: str) -> dict | None:
     """A term, only if it belongs to a lease this user owns."""
     with db() as conn:
         row = conn.execute(
-            """SELECT t.*, d.name AS document_name
+            """SELECT t.*, COALESCE(d.name,'') AS document_name,
+                      COALESCE(NULLIF(t.user_effective_date,''), d.effective_date, l.start_date) AS effective_date,
+                      COALESCE(d.kind,'') AS document_kind
                FROM terms t
                JOIN leases l ON l.id = t.lease_id
-               JOIN documents d ON d.id = t.document_id
+               LEFT JOIN documents d ON d.id = t.document_id
                WHERE t.id=? AND l.user_id=?""",
             (term_id, user_id),
         ).fetchone()
     return dict(row) if row else None
+
+
+def record_user_term(lease_id: str, user_id: str, term_type: str, value: int,
+                     note: str = "", effective_date: str | None = None) -> dict | None:
+    """Store a value the tenant typed in, when the document could not supply one.
+
+    The spec's uncertain state ("we could not read this, or two clauses
+    contradict") was a dead end: the UI said "uncertain" and there was no way
+    forward. This is the way forward, and it is kept distinct from extracted
+    evidence at every layer:
+
+      * `document_id` is NULL and `entered_by_user` is 1, so nothing can render
+        it as "page 4 of the lease";
+      * `validated` is 1 but `confidence` reflects that a person vouched for it,
+        not a machine;
+      * the UI labels it "entered by you".
+
+    It is not neutral, and it should not be: the tenant stating their own rent
+    is a claim, not a reading, and the audit says so.
+
+    `effective_date` defaults to the *lease start*, because a tenant supplying a
+    missing value is stating what the lease has said all along - not making a
+    change from today. The one case that needs a different date is choosing
+    between two amendments that contradict each other: there the caller passes
+    that clause's own effective date, because a choice dated at the lease start
+    would lose to both amendments under "latest clause wins" and the button would
+    appear to do nothing.
+    """
+    lease = get_lease(lease_id, user_id)
+    if not lease:
+        return None
+    term_id = uid()
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO terms(id,document_id,lease_id,term_type,value_integer,
+                                 source_quote,page,confidence,validated,ambiguous,
+                                 corrected_by_user,corrected_at,entered_by_user,
+                                 user_effective_date)
+               VALUES (?,NULL,?,?,?,?,1,1.0,1,0,1,?,1,?)""",
+            (term_id, lease_id, term_type, value, note.strip()[:300], now_iso(),
+             effective_date or (lease.get("start_date") or now_iso()[:10])),
+        )
+    row = get_term_for_user(term_id, user_id)
+    if row:
+        row["corrected_by_user"] = bool(row.get("corrected_by_user"))
+        row["entered_by_user"] = bool(row.get("entered_by_user"))
+        row["validated"] = bool(row.get("validated"))
+        row["ambiguous"] = bool(row.get("ambiguous"))
+    return row
 
 
 def correct_term(term_id: str, user_id: str, value: int | None, note: str = "") -> dict | None:
