@@ -30,6 +30,7 @@ def _term_from_row(r: dict) -> Term:
         confidence=float(r.get("confidence", 1.0)),
         validated=bool(r.get("validated", True)),
         ambiguous=bool(r.get("ambiguous", False)),
+        corrected_by_user=bool(r.get("corrected_by_user", False)),
     )
 
 
@@ -47,12 +48,15 @@ def terms_in_force(lease_id: str, as_of: str) -> list[dict]:
         if res.ok and res.term:
             t = res.term
             item.update({
+                # The id is what the UI needs to offer "this is wrong, fix it".
+                "term_id": t.id,
                 "value": t.value,
                 "source_quote": t.source_quote,
                 "page": t.page,
                 "document_name": t.document_name,
                 "document_kind": t.document_kind.value,
                 "effective_date": t.effective_date.isoformat(),
+                "corrected_by_user": t.corrected_by_user,
             })
         else:
             item["reason"] = res.reason.value if res.reason else "term_not_found"

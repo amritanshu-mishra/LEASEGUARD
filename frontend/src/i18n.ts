@@ -219,6 +219,26 @@ export const strings = {
   },
   viewAudit: { en: 'View audit', hi: 'जांच देखें' },
   showTermsAsOf: { en: 'Show terms as of', hi: 'इस तिथि पर शर्तें दिखाएं' },
+  fixValue: { en: 'Fix', hi: 'सुधारें' },
+  correctValue: { en: 'Correct value', hi: 'सही मान' },
+  correctedByYou: { en: 'corrected by you', hi: 'आपने सुधारा' },
+  correctedHint: {
+    en: 'You entered this value; it was not read from the document automatically.',
+    hi: 'यह मान आपने दर्ज किया; यह दस्तावेज़ से स्वतः नहीं पढ़ा गया।',
+  },
+  correctionNote: {
+    en: 'Value entered by the tenant from the signed document',
+    hi: 'मूल्य किरायेदार द्वारा हस्ताक्षरित दस्तावेज़ से दर्ज',
+  },
+  correctionSaved: {
+    en: 'Correction saved. Re-run the audit to see the updated result.',
+    hi: 'सुधार सहेजा गया। अपडेट परिणाम के लिए जांच दोबारा चलाएं।',
+  },
+  enterValidNumber: {
+    en: 'Enter a valid number of rupees (0 or more).',
+    hi: 'रुपये में सही संख्या दर्ज करें (0 या अधिक)।',
+  },
+  saveFailed: { en: 'Could not save the correction.', hi: 'सुधार सहेजा नहीं जा सका।' },
   activity: { en: 'Activity', hi: 'गतिविधि' },
   activityTitle: { en: 'Your activity trail', hi: 'आपका गतिविधि रिकॉर्ड' },
   activitySub: {

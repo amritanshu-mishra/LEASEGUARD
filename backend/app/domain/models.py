@@ -43,6 +43,10 @@ class Term:
     confidence: float = 1.0
     validated: bool = True
     ambiguous: bool = False
+    # True when the tenant typed this value in themselves. Kept distinct from a
+    # machine-extracted quote so the UI never presents a hand-entered number as
+    # document evidence.
+    corrected_by_user: bool = False
 
 
 @dataclass

@@ -634,3 +634,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, [tabindex]:focus-vis
 .timeline-icon { font-size: 18px; line-height: 1.4; }
 .timeline-title { font-weight: 600; font-size: 14px; color: var(--navy); }
 .timeline-meta { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+/* Term correction */
+.term-value-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.term-fix { opacity: .75; }
+.term-fix:hover { opacity: 1; }
+.term-edit { display: flex; align-items: center; gap: 6px; }
+.term-input {
+  width: 110px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+}

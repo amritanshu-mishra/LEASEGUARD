@@ -5,10 +5,11 @@ import re
 from datetime import date, datetime
 
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
 
-from ..core.config import DEMO_USER_ID, MAX_UPLOAD_MB, UPLOAD_DIR
+from ..core.config import MAX_UPLOAD_MB, UPLOAD_DIR
+from ..core.session import current_user
 from ..infra import documents as docparse
 from ..infra import extraction, heuristics, store
 from ..services.audit_service import compute_impact, run_audit, terms_in_force
@@ -22,6 +23,11 @@ class DecisionBody(BaseModel):
     approved: bool
 
 
+class CorrectionBody(BaseModel):
+    value: int | None = None
+    note: str | None = None
+
+
 class LeaseBody(BaseModel):
     property_label: str
     start_date: str | None = None
@@ -30,9 +36,9 @@ class LeaseBody(BaseModel):
 
 
 @router.get("/audit-log")
-def audit_log(limit: int = Query(default=50, ge=1, le=500)):
+def audit_log(limit: int = Query(default=50, ge=1, le=500), user_id: str = Depends(current_user)):
     """The current user's action trail (BR10)."""
-    return {"events": store.list_audit_log(DEMO_USER_ID, limit=limit)}
+    return {"events": store.list_audit_log(user_id, limit=limit)}
 
 
 @router.get("/health")
@@ -41,13 +47,13 @@ def health():
 
 
 @router.get("/leases")
-def list_leases():
-    return {"leases": store.list_leases(DEMO_USER_ID)}
+def list_leases(user_id: str = Depends(current_user)):
+    return {"leases": store.list_leases(user_id)}
 
 
 @router.post("/leases/sample")
-def create_sample():
-    result = load_sample_case(DEMO_USER_ID)
+def create_sample(user_id: str = Depends(current_user)):
+    result = load_sample_case(user_id)
     lease = result["lease"]
     return {
         "ok": True,
@@ -59,12 +65,12 @@ def create_sample():
 
 
 @router.post("/leases")
-def create_lease(body: LeaseBody):
+def create_lease(body: LeaseBody, user_id: str = Depends(current_user)):
     label = (body.property_label or "").strip()
     if len(label) < 3:
         raise HTTPException(status_code=422, detail={"error": {"code": "invalid_lease", "message": "Property name is too short."}})
-    lease = store.create_lease(DEMO_USER_ID, label, body.start_date or "2025-04-01", body.end_date or "2028-03-31")
-    store.log_event(DEMO_USER_ID, "lease_created", "lease", lease["id"])
+    lease = store.create_lease(user_id, label, body.start_date or "2025-04-01", body.end_date or "2028-03-31")
+    store.log_event(user_id, "lease_created", "lease", lease["id"])
     return {"ok": True, "lease_id": lease["id"], "lease": lease}
 
 
@@ -74,9 +80,10 @@ async def upload_document(
     kind: str = Form(...),
     effective_date: str | None = Form(default=None),
     file: UploadFile = File(...),
+    user_id: str = Depends(current_user),
 ):
     """Upload a lease / amendment / invoice document and extract grounded terms."""
-    lease = store.get_lease(lease_id, DEMO_USER_ID)
+    lease = store.get_lease(lease_id, user_id)
     if not lease:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
     kind = kind.strip().lower()
@@ -222,13 +229,13 @@ async def upload_document(
 
     # Surface per-page text so the UI can show the real page the quote came from.
     response["pages"] = [{"page": i + 1, "text": p[:4000]} for i, p in enumerate(pages)]
-    store.log_event(DEMO_USER_ID, "document_uploaded", "document", doc["id"])
+    store.log_event(user_id, "document_uploaded", "document", doc["id"])
     return response
 
 
 @router.get("/leases/{lease_id}")
-def get_lease(lease_id: str, as_of: str = Query(default=None)):
-    lease = store.get_lease(lease_id, DEMO_USER_ID)
+def get_lease(lease_id: str, as_of: str = Query(default=None), user_id: str = Depends(current_user)):
+    lease = store.get_lease(lease_id, user_id)
     if not lease:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
     # "Today" by default. The previous default was a hardcoded demo date, which meant
@@ -251,9 +258,29 @@ def get_lease(lease_id: str, as_of: str = Query(default=None)):
     return lease
 
 
+@router.patch("/terms/{term_id}")
+def correct_term(term_id: str, body: CorrectionBody, user_id: str = Depends(current_user)):
+    """Let the tenant correct a misread clause value.
+
+    Never trust the reader blindly: if it read Rs 4,000 as Rs 40,000 the audit is
+    wrong and the tenant is the only one who can tell. The correction is recorded as
+    user-supplied so the UI cannot present it as an extracted quote.
+    """
+    existing = store.get_term_for_user(term_id, user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Term not found"}})
+    if body.value is not None and body.value < 0:
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_value", "message": "A term value cannot be negative."}})
+    updated = store.correct_term(term_id, user_id, body.value, body.note or "")
+    store.log_event(user_id, "term_corrected", "term", term_id,
+                    detail=f"{existing['term_type']} -> {body.value}")
+    return {"ok": True, "term": updated}
+
+
 @router.post("/leases/{lease_id}/audit")
-def audit_lease(lease_id: str, invoice_id: str | None = Query(default=None)):
-    lease = store.get_lease(lease_id, DEMO_USER_ID)
+def audit_lease(lease_id: str, invoice_id: str | None = Query(default=None), user_id: str = Depends(current_user)):
+    lease = store.get_lease(lease_id, user_id)
     if not lease:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
     invoices = lease.get("invoices", [])
@@ -267,16 +294,16 @@ def audit_lease(lease_id: str, invoice_id: str | None = Query(default=None)):
     if not inv:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})
     # re-fetch invoice with line items as stored
-    invoice = store.get_invoice(inv["id"])
+    invoice = store.get_invoice(inv["id"], user_id)
     if not invoice:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})
-    result = run_audit(lease_id, invoice, DEMO_USER_ID)
+    result = run_audit(lease_id, invoice, user_id)
     return result
 
 
 @router.get("/invoices/{invoice_id}/findings")
-def get_findings(invoice_id: str):
-    invoice = store.get_invoice(invoice_id)
+def get_findings(invoice_id: str, user_id: str = Depends(current_user)):
+    invoice = store.get_invoice(invoice_id, user_id)
     if not invoice:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})
     findings = store.list_findings(invoice_id)
@@ -288,9 +315,9 @@ def get_findings(invoice_id: str):
 
 
 @router.patch("/findings/{finding_id}")
-def decide_finding(finding_id: str, body: DecisionBody):
+def decide_finding(finding_id: str, body: DecisionBody, user_id: str = Depends(current_user)):
     # BR11: look the finding up through its lease ownership, not by raw id.
-    finding = store.get_finding_for_user(finding_id, DEMO_USER_ID)
+    finding = store.get_finding_for_user(finding_id, user_id)
     if not finding:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Finding not found"}})
     if finding.get("informational"):
@@ -298,20 +325,20 @@ def decide_finding(finding_id: str, body: DecisionBody):
             "error": {"code": "informational_only",
                       "message": "This charge was checked and needs no action, so it cannot be approved or rejected."}
         })
-    updated = store.set_finding_decision(finding_id, DEMO_USER_ID, body.approved)
+    updated = store.set_finding_decision(finding_id, user_id, body.approved)
     store.log_event(
-        DEMO_USER_ID, "finding_decision", "finding", finding_id,
+        user_id, "finding_decision", "finding", finding_id,
         detail="approved" if body.approved else "rejected",
     )
     return {"ok": True, "finding": updated}
 
 
 @router.post("/invoices/{invoice_id}/letter")
-def generate_letter(invoice_id: str, language: str = Query(default="en")):
-    invoice = store.get_invoice(invoice_id)
+def generate_letter(invoice_id: str, language: str = Query(default="en"), user_id: str = Depends(current_user)):
+    invoice = store.get_invoice(invoice_id, user_id)
     if not invoice:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})
-    lease = store.get_lease(invoice["lease_id"], DEMO_USER_ID)
+    lease = store.get_lease(invoice["lease_id"], user_id)
     if not lease:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
     findings = store.list_findings(invoice_id)
@@ -319,17 +346,17 @@ def generate_letter(invoice_id: str, language: str = Query(default="en")):
     if not approved:
         raise HTTPException(status_code=409, detail={"error": {"code": "no_approved_findings", "message": "Approve at least one finding before generating a letter."}})
     letter = build_letter(lease, invoice, findings, language=language)
-    store.log_event(DEMO_USER_ID, "letter_generated", "invoice", invoice_id)
+    store.log_event(user_id, "letter_generated", "invoice", invoice_id)
     return letter
 
 
 @router.delete("/leases/{lease_id}")
-def delete_lease(lease_id: str):
+def delete_lease(lease_id: str, user_id: str = Depends(current_user)):
     # Read the file paths first: after the delete the rows that name them are gone.
     paths = store.document_storage_paths(lease_id)
-    ok = store.delete_lease(lease_id, DEMO_USER_ID)
+    ok = store.delete_lease(lease_id, user_id)
     if not ok:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
     removed = store.purge_orphan_files(paths)
-    store.log_event(DEMO_USER_ID, "lease_deleted", "lease", lease_id)
+    store.log_event(user_id, "lease_deleted", "lease", lease_id)
     return {"ok": True, "files_removed": removed}

@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS approvals (
   decided_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -110,6 +116,8 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # (table, column, column DDL)
     ("findings", "information_only", "INTEGER NOT NULL DEFAULT 0"),
     ("audit_log", "detail", "TEXT NOT NULL DEFAULT ''"),
+    ("terms", "corrected_by_user", "INTEGER NOT NULL DEFAULT 0"),
+    ("terms", "corrected_at", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 

@@ -239,6 +239,7 @@ def list_terms(lease_id: str) -> list[dict]:
     for r in rows:
         r["validated"] = bool(r["validated"])
         r["ambiguous"] = bool(r["ambiguous"])
+        r["corrected_by_user"] = bool(r.get("corrected_by_user"))
     return rows
 
 
@@ -254,9 +255,22 @@ def create_invoice(lease_id: str, document_id: str | None, period_start: str, pe
     return get_invoice(inv_id)  # type: ignore
 
 
-def get_invoice(invoice_id: str) -> dict | None:
+def get_invoice(invoice_id: str, user_id: str | None = None) -> dict | None:
+    """Fetch an invoice. Pass user_id to enforce ownership.
+
+    Callers that read an invoice must pass user_id: invoice ids are opaque but not
+    secret, and without the join any authenticated browser could read another
+    tenant's bill by guessing or observing an id.
+    """
     with db() as conn:
-        row = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+        if user_id is None:
+            row = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT i.* FROM invoices i JOIN leases l ON l.id=i.lease_id "
+                "WHERE i.id=? AND l.user_id=?",
+                (invoice_id, user_id),
+            ).fetchone()
         if not row:
             return None
         inv = dict(row)
@@ -344,3 +358,67 @@ def set_finding_decision(finding_id: str, user_id: str, approved: bool) -> dict 
             (uid(), finding_id, user_id, "approved" if approved else "rejected", now_iso()),
         )
     return get_finding(finding_id)
+
+
+# --- sessions ----------------------------------------------------------------
+
+def create_session(token_hash: str, user_id: str) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions(token_hash,user_id,created_at) VALUES (?,?,?)",
+            (token_hash, user_id, now_iso()),
+        )
+
+
+def user_for_session_hash(token_hash: str) -> str | None:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM sessions WHERE token_hash=?", (token_hash,)
+        ).fetchone()
+    return row["user_id"] if row else None
+
+
+# --- manual term corrections -------------------------------------------------
+
+def get_term_for_user(term_id: str, user_id: str) -> dict | None:
+    """A term, only if it belongs to a lease this user owns."""
+    with db() as conn:
+        row = conn.execute(
+            """SELECT t.*, d.name AS document_name
+               FROM terms t
+               JOIN leases l ON l.id = t.lease_id
+               JOIN documents d ON d.id = t.document_id
+               WHERE t.id=? AND l.user_id=?""",
+            (term_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def correct_term(term_id: str, user_id: str, value: int | None, note: str = "") -> dict | None:
+    """Apply a tenant's correction to an extracted term.
+
+    Extraction is heuristic, so a wrong number is always possible: a "4" read as
+    "40" changes the whole audit. Without a correction path the only remedy was to
+    delete the lease and start over. A correction is marked so the UI never presents
+    a hand-entered value as machine-extracted evidence.
+    """
+    if not get_term_for_user(term_id, user_id):
+        return None
+    with db() as conn:
+        conn.execute(
+            """UPDATE terms
+               SET value_integer=?, ambiguous=0, validated=1,
+                   confidence=1.0, corrected_by_user=1, corrected_at=?
+               WHERE id=?""",
+            (value, now_iso(), term_id),
+        )
+    store_note = note.strip()[:300]
+    if store_note:
+        with db() as conn:
+            conn.execute("UPDATE terms SET source_quote=? WHERE id=?", (store_note, term_id))
+    updated = get_term_for_user(term_id, user_id)
+    if updated:
+        updated["corrected_by_user"] = bool(updated.get("corrected_by_user"))
+        updated["validated"] = bool(updated.get("validated"))
+        updated["ambiguous"] = bool(updated.get("ambiguous"))
+    return updated

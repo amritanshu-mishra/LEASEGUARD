@@ -279,15 +279,26 @@ def test_audit_log_records_who_did_what(client):
 
 
 def test_finding_from_another_user_is_not_visible(client):
-    """BR11: a finding id alone must not grant access; lookups are lease-scoped."""
+    """BR11: a finding id alone must not grant access; lookups are lease-scoped.
+
+    Two separate browser sessions are used so this also proves the per-session
+    identity actually isolates tenants, rather than both calls landing on demo-user.
+    """
+    from app.core.session import DEMO_SESSION
     from app.infra import store
 
-    created = client.post("/api/leases/sample")
-    lease_id, invoice_id = created.json()["lease_id"], created.json()["invoice_id"]
-    client.post(f"/api/leases/{lease_id}/audit?invoice_id={invoice_id}")
-    finding_id = client.get(f"/api/invoices/{invoice_id}/findings").json()["findings"][0]["id"]
+    owner = client.post("/api/leases/sample", cookies={"lg_session": DEMO_SESSION})
+    lease_id, invoice_id = owner.json()["lease_id"], owner.json()["invoice_id"]
+    client.post(f"/api/leases/{lease_id}/audit?invoice_id={invoice_id}",
+                cookies={"lg_session": DEMO_SESSION})
+    finding_id = client.get(f"/api/invoices/{invoice_id}/findings",
+                            cookies={"lg_session": DEMO_SESSION}).json()["findings"][0]["id"]
 
+    # The owner can see it; a different session cannot.
     assert store.get_finding_for_user(finding_id, "demo-user") is not None
+    other = client.get(f"/api/invoices/{invoice_id}/findings", cookies={"lg_session": DEMO_SESSION + "x"})
+    # An unknown session gets a fresh identity, which owns nothing.
+    assert other.status_code == 404
     assert store.get_finding_for_user(finding_id, "someone-else") is None
 
 

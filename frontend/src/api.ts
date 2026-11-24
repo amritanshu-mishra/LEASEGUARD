@@ -25,6 +25,8 @@ export const api = {
   decideFinding: (findingId: string, approved: boolean) => request<any>(`/api/findings/${findingId}`, { method: 'PATCH', body: JSON.stringify({ approved }) }),
   generateLetter: (invoiceId: string, language: 'en' | 'hi' = 'en') => request<any>(`/api/invoices/${invoiceId}/letter?language=${language}`, { method: 'POST' }),
   listAuditLog: (limit = 100) => request<any>(`/api/audit-log?limit=${limit}`),
+  correctTerm: (termId: string, value: number | null, note?: string) =>
+    request<any>(`/api/terms/${termId}`, { method: 'PATCH', body: JSON.stringify({ value, note }) }),
   deleteLease: (leaseId: string) => request<any>(`/api/leases/${leaseId}`, { method: 'DELETE' }),
   createLease: (body: { property_label: string; start_date?: string; end_date?: string }) =>
     request<any>('/api/leases', { method: 'POST', body: JSON.stringify(body) }),
