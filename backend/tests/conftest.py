@@ -31,3 +31,24 @@ os.environ.setdefault("USE_FIXTURES", "true")
 _real_db = (Path(__file__).resolve().parents[1] / "leaseguard.db").resolve()
 if Path(os.environ["DB_PATH"]).resolve() == _real_db:
     os.environ["DB_PATH"] = str(_TMP / "test.db")
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Each test starts with empty rate-limit windows.
+
+    Without this, one test that uploads a dozen documents would leave the next
+    test receiving 429s, and the failure would look like a bug in whatever the
+    next test happens to check. The limits themselves are covered explicitly in
+    tests/api/test_rate_limits.py.
+    """
+    from app.core import limits
+
+    for limiter in limits.ALL_LIMITS:
+        limiter.reset()
+    yield
+    for limiter in limits.ALL_LIMITS:
+        limiter.reset()

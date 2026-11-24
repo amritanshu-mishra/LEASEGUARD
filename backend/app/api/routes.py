@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Respon
 from pydantic import BaseModel
 
 from ..core.config import MAX_UPLOAD_MB, UPLOAD_DIR
+from ..core import limits
 from ..core.session import current_user
 from ..infra import documents as docparse
 from ..infra import extraction, heuristics, store
@@ -126,6 +127,8 @@ async def upload_document(
             )
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(status_code=413, detail={"error": {"code": "file_too_large", "message": f"File must be under {MAX_UPLOAD_MB} MB."}})
+
+    limits.enforce(limits.UPLOAD_LIMIT, user_id, "uploads")
 
     sha = hashlib.sha256(data).hexdigest()
     existing = next((d for d in store.list_documents(lease_id) if d.get("sha256") == sha), None)
@@ -373,6 +376,7 @@ def add_user_term(lease_id: str, body: UserTermBody, user_id: str = Depends(curr
 
 @router.post("/leases/{lease_id}/audit")
 def audit_lease(lease_id: str, invoice_id: str | None = Query(default=None), user_id: str = Depends(current_user)):
+    limits.enforce(limits.AUDIT_LIMIT, user_id, "audits")
     lease = store.get_lease(lease_id, user_id)
     if not lease:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})

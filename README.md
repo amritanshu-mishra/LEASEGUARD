@@ -182,15 +182,15 @@ Base path `/api`. JSON in, JSON out.
 ```bash
 cd backend
 bash ../scripts/install_backend.sh        # installs deps and verifies OCR imports
-PYTHONPATH=. pytest -q                    # 95 tests
+PYTHONPATH=. pytest -q                    # 124 tests
 PYTHONPATH=. pytest -q --cov=app.domain --cov=app.services --cov-fail-under=90
 
 cd ../frontend
 npm ci && npm run e2e:ci                  # builds, starts the API, drives the real UI
 ```
 
-**95 backend tests, 93.7% branch coverage** on the domain + service layers (the spec target is
-90%), plus **23 UI end-to-end checks**. CI runs both on every push
+**124 backend tests, 94% branch coverage** on the domain + service layers (the spec target is
+90%), plus **31 UI end-to-end checks**. CI runs both on every push
 (`.github/workflows/ci.yml`).
 
 - `tests/domain/test_golden_cases.py` — the spec's golden cases **G1–G6** and unit cases
@@ -263,6 +263,24 @@ samples/                   the three synthetic PDFs
 - **No automated sending.** WhatsApp opens with text pre-filled; the tenant decides.
 - **Two checks implemented.** Rent escalation and maintenance cap. The precedence engine and
   evidence model generalise to deposits, late fees and GST, which is the next step.
+
+- **"Uncertain" is a path, not a dead end.** A term can come back uncertain because the clause
+  is missing or because two amendments contradict each other. The screen now offers **Enter
+  value** in the first case and **Use this clause** in the second. A value the tenant supplies
+  is stored with no document, no page and no quote, flagged `entered_by_user`, and labelled
+  "entered by you", so it can never be mistaken for a clause the machine read. A choice also
+  does not become a permanent override: a later amendment still wins over an earlier choice.
+
+- **Invoice figures are quote-checked too.** Every billed amount carries the text it came from
+  and is verified against the document. An amount that is not in the text is listed in the
+  upload response instead of quietly becoming a finding.
+
+- **Rate limits, because the demo is public.** 10 document uploads and 20 audits per session
+  per minute, answered with a 429 that says how long to wait and a `Retry-After` header. The
+  ceiling is far above real use - a tenant uploads three documents - and it exists to stop a
+  script taking the single worker down mid-judging. The window is in memory and per process:
+  one node, no shared store, and it is described that way rather than as infrastructure it is
+  not.
 
 - **Sessions, not accounts.** Each browser gets an opaque token in an HttpOnly,
   `SameSite=Lax` cookie; only its SHA-256 hash is stored, and every query is scoped to the

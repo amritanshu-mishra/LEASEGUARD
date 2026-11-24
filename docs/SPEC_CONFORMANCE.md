@@ -88,6 +88,9 @@ These are conscious decisions, not oversights. Each is stated in the README too.
 | Supabase Auth + Postgres + RLS | Per-browser session cookie, SQLite, app-level scoping | Full accounts are out of scope, but app-level scoping is real rather than assumed: every query is filtered by `user_id` and six tests prove two browsers cannot reach each other's data. The remaining difference from RLS is that enforcement lives in the queries, not the database. Stated as a limit, not hidden |
 | Letter as PDF (S6) | **WhatsApp share + copy** | Explicit user requirement. The tenant forwards text; no PDF download step |
 | Jinja2 templated letter | Plain f-string builder | Jinja was in `requirements.txt` but unused — removed rather than left as cargo |
+| Invoice amount verified against the document | Amounts used to be trusted as parsed | ✅ every line item carries its source text and is quote-checked; unverified amounts are reported in the upload response instead of driving a finding |
+| Per-user rate limits | Not specified | ✅ 10 uploads and 20 audits per session per minute, 429 with `Retry-After`. In memory and per process - honest for a single-node demo, not a distributed limiter |
+| Resolving an uncertain term | User must correct the document and re-upload | ✅ missing clause: tenant supplies a value; contradiction: tenant picks the clause that applies. Both are stored as user-supplied with no document attached |
 | OCR for photographed leases | **Implemented** (`app/infra/ocr.py`) - with the honesty caveat the refusal was protecting | RapidOCR + PyMuPDF read scans and photos, but OCR can silently skip a line: measured, the escalation clause vanished on one font while mean confidence stayed at 0.98. So OCR'd text is never presented as clean extraction - the API returns `ocr: true` and a warning, the lease screen keeps a "read from a scan" badge, and every term can be corrected by hand (`PATCH /terms/{id}`), which satisfies BR6's intent instead of only its letter |
 | Checks: escalation + cap only | Same | Scope kept tight per the brief's advice ("a polished product that does one thing well") |
 
@@ -131,11 +134,17 @@ same words.
    nothing to log back in to. Fine for a judged demo; not sufficient for production.
 2. **Two checks only.** Rent escalation and maintenance cap. The precedence engine
    generalises, the check library does not yet cover deposits, late fees or GST.
-3. **OCR is implemented but cannot be trusted silently.** Scans and photos are read, and
+3. **Uncertain terms are resolvable.** A missing clause can be supplied by the tenant, and a
+   contradiction between two amendments can be settled by choosing one. Both are stored as
+   *user-supplied* with no document attached, so they cannot pass as extracted evidence. What
+   remains unsolved: there is no bulk "review all uncertain terms" screen, and a tenant can
+   still supply a wrong number - the audit then reflects their claim, which is why it is
+   labelled as theirs rather than as the document's.
+4. **OCR is implemented but cannot be trusted silently.** Scans and photos are read, and
    they are always labelled as such with a warning, because the engine was measured dropping
    a whole clause while reporting high confidence. The tenant is asked to check every term,
    and can correct any of them. What is *not* solved: a dropped clause that the tenant does
    not notice, and a confidence score that would let us flag likely misses automatically.
-4. **SQLite.** Adequate for a single-node demo; Postgres + migrations for production.
-5. **Time-saved is an estimate**, not a measurement. It is labelled as such in the UI, the
+5. **SQLite.** Adequate for a single-node demo; Postgres + migrations for production.
+6. **Time-saved is an estimate**, not a measurement. It is labelled as such in the UI, the
    API response and this document.

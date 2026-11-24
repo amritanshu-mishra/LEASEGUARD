@@ -79,10 +79,27 @@ def _extract_json(text: str) -> dict[str, Any]:
     raise ValueError("No JSON found in model output")
 
 
-async def extract_terms_with_groq(document_text: str, doc_kind: str) -> dict[str, Any]:
+async def extract_terms_with_groq(
+    document_text: str, doc_kind: str, repair_hint: str = ""
+) -> dict[str, Any]:
+    """One call to Groq. `repair_hint` carries the previous failure back to the model.
+
+    The build guide's F2 requires exactly one retry with the validation error fed
+    back, then give up. Two calls is the whole budget: a malformed answer usually
+    fails because the model invented a quote, and telling it so fixes it. A model
+    that fails twice will not be fixed by a third attempt, and the upload should
+    not hang while it tries.
+    """
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY not configured")
     prompt = f"Document kind: {doc_kind}\n\nDocument text:\n{document_text[:12000]}"
+    if repair_hint:
+        prompt += (
+            "\n\nYour previous answer was rejected for this reason:\n"
+            f"{repair_hint}\n"
+            "Return corrected JSON. Every source_quote MUST be copied character for "
+            "character from the document text above."
+        )
     async with httpx.AsyncClient(timeout=45.0) as client:
         resp = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -154,11 +171,28 @@ async def extract_terms(pages: list[str], doc_kind: str) -> dict[str, Any]:
         try:
             result = await extract_terms_with_groq(full_text, doc_kind)
             kept, rejected = _sanitize_model_terms(result, full_text)
-            if kept:
+            # Note the condition: rejected terms are *kept* as uncertain with no
+            # quote, so `kept` is almost never empty and testing it would skip the
+            # retry entirely. What triggers a retry is a quote that failed to
+            # verify - that is the failure the model can actually fix.
+            if kept and not rejected:
                 return {"terms": kept, "extractor": "groq"}
+
+            # Exactly one retry, with the failure fed back (build guide F2).
+            hint = (
+                f"{len(rejected)} term(s) were rejected because source_quote did not "
+                "appear verbatim in the document: " + ", ".join(rejected[:8])
+            ) if rejected else "the response contained no usable terms."
+            result = await extract_terms_with_groq(full_text, doc_kind, repair_hint=hint)
+            kept, rejected_again = _sanitize_model_terms(result, full_text)
+            if kept and (not rejected_again or len(rejected_again) < len(rejected)):
+                # Accept the retry when it is clean, or when it at least improved.
+                # Demanding perfection would fall back to heuristics over one
+                # stubborn term and lose the terms that were right.
+                return {"terms": kept, "extractor": "groq", "retried": True}
             fallback_reason = (
-                f"the model returned no quote that appears in the document "
-                f"({len(rejected)} rejected)"
+                f"the model returned no quote that appears in the document, on two "
+                f"attempts ({len(rejected)} then {len(rejected_again)} rejected)"
             )
         except Exception as exc:  # never fail the upload, but never hide the reason
             log.warning("Groq extraction failed, falling back to heuristics: %s", exc)
