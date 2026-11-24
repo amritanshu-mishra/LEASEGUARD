@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+*.sqlite3
+*.db
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# OS/editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Uploads/runtime
+backend/uploads/
+backend/leaseguard.db
+
+# Keep env example
+!.env.example
+
+# generated dev helpers
+frontend/*.mjs
+*.tsbuildinfo

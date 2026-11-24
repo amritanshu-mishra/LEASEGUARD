@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import hashlib
+import re
+from datetime import date
+
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel
+
+from ..core.config import DEMO_USER_ID, MAX_UPLOAD_MB, UPLOAD_DIR
+from ..infra import documents as docparse
+from ..infra import extraction, store
+from ..services.audit_service import compute_impact, run_audit, terms_in_force
+from ..services.letter_service import build_letter
+from ..services.sample_service import load_sample_case
+
+router = APIRouter(prefix="/api")
+
+
+class DecisionBody(BaseModel):
+    approved: bool
+
+
+class LeaseBody(BaseModel):
+    property_label: str
+    start_date: str | None = None
+    end_date: str | None = None
+    as_of: str | None = None
+
+
+@router.get("/health")
+def health():
+    return {"ok": True, "service": "leaseguard", "synthetic_demo": True}
+
+
+@router.get("/leases")
+def list_leases():
+    return {"leases": store.list_leases(DEMO_USER_ID)}
+
+
+@router.post("/leases/sample")
+def create_sample():
+    result = load_sample_case(DEMO_USER_ID)
+    lease = result["lease"]
+    return {"ok": True, "lease_id": lease["id"], "invoice_id": result["invoice"]["id"], "lease": lease}
+
+
+@router.post("/leases")
+def create_lease(body: LeaseBody):
+    label = (body.property_label or "").strip()
+    if len(label) < 3:
+        raise HTTPException(status_code=422, detail={"error": {"code": "invalid_lease", "message": "Property name is too short."}})
+    lease = store.create_lease(DEMO_USER_ID, label, body.start_date or "2025-04-01", body.end_date or "2028-03-31")
+    store.log_event(DEMO_USER_ID, "lease_created", "lease", lease["id"])
+    return {"ok": True, "lease_id": lease["id"], "lease": lease}
+
+
+@router.post("/leases/{lease_id}/documents")
+async def upload_document(
+    lease_id: str,
+    kind: str = Form(...),
+    effective_date: str | None = Form(default=None),
+    file: UploadFile = File(...),
+):
+    """Upload a lease / amendment / invoice document and extract grounded terms."""
+    lease = store.get_lease(lease_id, DEMO_USER_ID)
+    if not lease:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    kind = kind.strip().lower()
+    if kind not in {"lease", "amendment", "invoice"}:
+        raise HTTPException(status_code=422, detail={"error": {"code": "invalid_kind", "message": "kind must be lease, amendment or invoice"}})
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail={"error": {"code": "empty_file", "message": "The uploaded file is empty."}})
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail={"error": {"code": "file_too_large", "message": f"File must be under {MAX_UPLOAD_MB} MB."}})
+
+    sha = hashlib.sha256(data).hexdigest()
+    existing = next((d for d in store.list_documents(lease_id) if d.get("sha256") == sha), None)
+    if existing:
+        raise HTTPException(status_code=409, detail={"error": {"code": "duplicate_document", "message": "This exact file was already uploaded to this lease."}})
+
+    try:
+        pages = docparse.parse_pages(file.filename or "", data)
+    except docparse.DocumentParseError as exc:
+        raise HTTPException(status_code=422, detail={"error": {"code": "unreadable_document", "message": str(exc)}}) from exc
+
+    eff = effective_date or (lease["start_date"] if kind != "invoice" else date.today().isoformat())
+    try:
+        date.fromisoformat(eff)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error": {"code": "invalid_date", "message": "effective_date must be YYYY-MM-DD."}}) from exc
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", (file.filename or f"{kind}.pdf"))[:120]
+    storage = UPLOAD_DIR / f"{sha[:12]}_{safe_name}"
+    storage.write_bytes(data)
+
+    doc = store.create_document(
+        lease_id, kind, file.filename or safe_name, str(storage), eff, sha, len(pages),
+        "\n\n".join(pages),
+    )
+
+    response: dict = {"ok": True, "document_id": doc["id"], "kind": kind, "page_count": len(pages), "pages": []}
+
+    if kind == "invoice":
+        parsed = extraction.extract_invoice(pages)
+        if not parsed["line_items"]:
+            raise HTTPException(status_code=422, detail={
+                "error": {"code": "no_line_items",
+                          "message": "Could not find any billed amounts in this invoice. Try a clearer PDF or paste the text."}
+            })
+        label = parsed["period_label"] or eff[:7]
+        invoice = store.create_invoice(lease_id, doc["id"], eff, label, parsed["line_items"])
+        response.update({"invoice_id": invoice["id"], "line_items": parsed["line_items"], "period_label": label,
+                         "extractor": parsed["extractor"], "invoice": invoice})
+    else:
+        parsed = await extraction.extract_terms(pages, kind)
+        terms = []
+        for t in parsed["terms"]:
+            terms.append({
+                "term_type": t["term_type"],
+                "value": t.get("value"),
+                "source_quote": t.get("source_quote", ""),
+                "page": t.get("page", 1),
+                "confidence": t.get("confidence", 0.5),
+                "validated": bool(t.get("source_quote")) and not t.get("ambiguous"),
+                "ambiguous": bool(t.get("ambiguous")),
+            })
+        store.replace_terms_for_document(doc["id"], lease_id, terms)
+        uncertain = [t["term_type"] for t in terms if t.get("ambiguous") or not t.get("source_quote")]
+        response.update({
+            "terms": terms,
+            "extractor": parsed.get("extractor", "heuristic"),
+            "uncertain_terms": uncertain,
+        })
+
+    # Surface per-page text so the UI can show the real page the quote came from.
+    response["pages"] = [{"page": i + 1, "text": p[:4000]} for i, p in enumerate(pages)]
+    store.log_event(DEMO_USER_ID, "document_uploaded", "document", doc["id"])
+    return response
+
+
+@router.get("/leases/{lease_id}")
+def get_lease(lease_id: str, as_of: str = Query(default="2026-04-01")):
+    lease = store.get_lease(lease_id, DEMO_USER_ID)
+    if not lease:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    in_force, superseded = terms_in_force(lease_id, as_of)
+    lease["terms_in_force"] = in_force
+    lease["superseded_terms"] = superseded
+    lease["as_of"] = as_of
+    # attach findings summary per invoice
+    for inv in lease.get("invoices", []):
+        findings = store.list_findings(inv["id"])
+        inv["findings_count"] = len(findings)
+        inv["confirmed_count"] = sum(1 for f in findings if f["status"] == "confirmed")
+        inv["uncertain_count"] = sum(1 for f in findings if f["status"] == "uncertain")
+    return lease
+
+
+@router.post("/leases/{lease_id}/audit")
+def audit_lease(lease_id: str, invoice_id: str | None = Query(default=None)):
+    lease = store.get_lease(lease_id, DEMO_USER_ID)
+    if not lease:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    invoices = lease.get("invoices", [])
+    if not invoices:
+        raise HTTPException(status_code=409, detail={"error": {"code": "missing_invoice", "message": "No invoice found for this lease"}})
+    inv = None
+    if invoice_id:
+        inv = next((i for i in invoices if i["id"] == invoice_id), None)
+    else:
+        inv = invoices[0]  # newest first
+    if not inv:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})
+    # re-fetch invoice with line items as stored
+    invoice = store.get_invoice(inv["id"])
+    if not invoice:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})
+    result = run_audit(lease_id, invoice, DEMO_USER_ID)
+    return result
+
+
+@router.get("/invoices/{invoice_id}/findings")
+def get_findings(invoice_id: str):
+    invoice = store.get_invoice(invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})
+    findings = store.list_findings(invoice_id)
+    return {
+        "invoice": invoice,
+        "findings": findings,
+        "impact": compute_impact(findings),
+    }
+
+
+@router.patch("/findings/{finding_id}")
+def decide_finding(finding_id: str, body: DecisionBody):
+    finding = store.get_finding(finding_id)
+    if not finding:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Finding not found"}})
+    updated = store.set_finding_decision(finding_id, DEMO_USER_ID, body.approved)
+    store.log_event(DEMO_USER_ID, "finding_decision", "finding", finding_id)
+    return {"ok": True, "finding": updated}
+
+
+@router.post("/invoices/{invoice_id}/letter")
+def generate_letter(invoice_id: str, language: str = Query(default="en")):
+    invoice = store.get_invoice(invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})
+    lease = store.get_lease(invoice["lease_id"], DEMO_USER_ID)
+    if not lease:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    findings = store.list_findings(invoice_id)
+    approved = [f for f in findings if f.get("approved") is True]
+    if not approved:
+        raise HTTPException(status_code=409, detail={"error": {"code": "no_approved_findings", "message": "Approve at least one finding before generating a letter."}})
+    letter = build_letter(lease, invoice, findings, language=language)
+    store.log_event(DEMO_USER_ID, "letter_generated", "invoice", invoice_id)
+    return letter
+
+
+@router.delete("/leases/{lease_id}")
+def delete_lease(lease_id: str):
+    ok = store.delete_lease(lease_id, DEMO_USER_ID)
+    if not ok:
+        raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Lease not found"}})
+    store.log_event(DEMO_USER_ID, "lease_deleted", "lease", lease_id)
+    return {"ok": True}

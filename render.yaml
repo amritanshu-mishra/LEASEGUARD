@@ -1,0 +1,24 @@
+# One-click deploy for the hackathon live demo (Render.com blueprint).
+# The FastAPI server also serves the built React SPA, so a single service is enough.
+services:
+  - type: web
+    name: leaseguard
+    runtime: python
+    plan: free
+    buildCommand: |
+      cd frontend && npm ci && npm run build && cd .. &&
+      python -m pip install -r backend/requirements.txt
+    startCommand: cd backend && PYTHONPATH=. uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: USE_FIXTURES
+        value: "true"
+      - key: DB_PATH
+        value: /tmp/leaseguard.db
+      - key: UPLOAD_DIR
+        value: /tmp/leaseguard-uploads
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      # Set GROQ_API_KEY in the Render dashboard if you want live model extraction.
+      # Leave it empty for the deterministic extractor used in the demo.
