@@ -350,3 +350,85 @@ def test_unresolved_term_is_reported_as_uncertain_not_dropped(client):
     maint = next(t for t in lease["terms_in_force"] if t["term_type"] == "maintenance_cap_paise")
     assert maint["status"] == "uncertain"
     assert maint["reason"] == "term_not_found"
+
+
+def test_real_pdf_upload_produces_a_correct_audit(client):
+    """The full journey from the shipped PDFs — the path the demo actually uses."""
+    from app.services.sample_service import DOC_FILES, SAMPLE_DIR
+
+    created = client.post("/api/leases", json={
+        "property_label": "PDF Journey Shop, Hazratganj",
+        "start_date": "2025-04-01",
+        "end_date": "2028-03-31",
+    })
+    lease_id = created.json()["lease_id"]
+
+    def upload_pdf(kind, effective):
+        path = SAMPLE_DIR / DOC_FILES[kind]
+        files = {"file": (path.name, path.read_bytes(), "application/pdf")}
+        return client.post(
+            f"/api/leases/{lease_id}/documents",
+            files=files,
+            data={"kind": kind, "effective_date": effective},
+        )
+
+    lease_res = upload_pdf("lease", "2025-04-01")
+    assert lease_res.status_code == 200, lease_res.text
+    terms = {t["term_type"]: t for t in lease_res.json()["terms"]}
+    assert terms["base_rent_paise"]["value"] == 40_00_000
+    assert terms["escalation_rate_bp"]["value"] == 1000
+    assert terms["maintenance_cap_paise"]["value"] == 4_00_000
+    assert terms["maintenance_cap_paise"]["page"] == 4
+    # Nothing should be uncertain when the PDF is clean.
+    assert lease_res.json()["uncertain_terms"] == []
+
+    amend_res = upload_pdf("amendment", "2026-01-01")
+    assert amend_res.status_code == 200, amend_res.text
+    amend_terms = {t["term_type"]: t for t in amend_res.json()["terms"]}
+    assert amend_terms["escalation_rate_bp"]["value"] == 500
+    assert amend_terms["amendment_effective_date"]["value"] == 20260101
+
+    inv_res = upload_pdf("invoice", "2026-04-01")
+    assert inv_res.status_code == 200, inv_res.text
+    invoice_id = inv_res.json()["invoice_id"]
+    assert inv_res.json()["period_label"] == "April 2026"
+
+    audit = client.post(f"/api/leases/{lease_id}/audit?invoice_id={invoice_id}").json()
+    diffs = {f["check_type"]: f for f in audit["findings"]}
+    assert diffs["rent_escalation"]["difference_paise"] == 2_00_000
+    assert diffs["rent_escalation"]["controlling_term"]["document_name"].startswith("Amendment_1")
+    assert diffs["rent_escalation"]["controlling_term"]["effective_date"] == "2026-01-01"
+    assert diffs["maintenance_cap"]["difference_paise"] == 1_20_000
+    assert diffs["maintenance_cap"]["controlling_term"]["page"] == 4
+    assert audit["impact"]["excess_detected_paise"] == 3_20_000
+
+    # The letter must quote the same evidence.
+    for f in audit["findings"]:
+        client.patch(f"/api/findings/{f['id']}", json={"approved": True})
+    letter = client.post(f"/api/invoices/{invoice_id}/letter").json()
+    assert "Amendment_1" in letter["text"]
+    assert "page 4" in letter["text"]
+    assert "Rs. 3,200.00" in letter["text"]
+
+
+def test_amount_parser_covers_indian_formats(client):
+    """Formats that appear in real Indian invoices: 1,00,000 / Rs. 2.5 lakh / (Rupees ...)."""
+    from app.infra import heuristics
+
+    assert heuristics.parse_rupees("Rent Rs. 1,00,000") == 1_00_00_000     # 1 crore paise
+    assert heuristics.parse_rupees("INR 62500") == 62_50_000
+    assert heuristics.parse_rupees("Rent of Rs. 40,000 (Rupees Forty Thousand only)") == 40_00_000
+    assert heuristics.parse_rupees("Total: ₹ 5,200/-") == 5_20_000
+    assert heuristics.parse_percent_bp("escalation of 5%") == 500
+    assert heuristics.parse_percent_bp("increase by ten percent") == 1000
+
+
+def test_sample_is_idempotent(client):
+    """Loading the demo case twice must not create a duplicate lease."""
+    first = client.post("/api/leases/sample").json()
+    second = client.post("/api/leases/sample").json()
+    assert first["lease_id"] == second["lease_id"]
+    assert second["reused"] is True
+    leases = client.get("/api/leases").json()["leases"]
+    labels = [l["property_label"] for l in leases]
+    assert labels.count(first["lease"]["property_label"]) == 1

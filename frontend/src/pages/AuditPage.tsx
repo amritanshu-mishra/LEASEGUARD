@@ -3,10 +3,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { useLang } from '../i18nContext'
 
-function inr(paise: number | null | undefined) {
-  if (paise == null) return '—'
-  return `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-}
+import { inr2 as inr, normaliseInr, normaliseProse } from '../format'
+
 
 export default function AuditPage() {
   const { leaseId, invoiceId } = useParams()
@@ -102,14 +100,14 @@ export default function AuditPage() {
             <strong>{t('impactTitle')}:</strong> {t('impactNote')}
           </div>
           <div className="stat-grid" role="group" aria-label={t('impactTitle')}>
-            <div className="stat">
+            <div className={`stat stat-accent ${impact.excess_detected_paise > 0 ? 'is-red' : 'is-green'}`}>
               <div className="stat-label">{t('excessDetected')}</div>
-              <div className={`stat-value ${impact.excess_detected_paise > 0 ? 'red' : 'green'}`}>{impact.excess_detected_display}</div>
+              <div className={`stat-value ${impact.excess_detected_paise > 0 ? 'red' : 'green'}`}>{normaliseInr(impact.excess_detected_display)}</div>
               <div className="stat-note">{t('excessNote')}</div>
             </div>
-            <div className="stat">
+            <div className={`stat stat-accent ${impact.amount_flagged_paise > 0 ? 'is-red' : 'is-green'}`}>
               <div className="stat-label">{t('flaggedForReview')}</div>
-              <div className={`stat-value ${impact.amount_flagged_paise > 0 ? 'red' : 'green'}`}>{impact.amount_flagged_display}</div>
+              <div className={`stat-value ${impact.amount_flagged_paise > 0 ? 'red' : 'green'}`}>{normaliseInr(impact.amount_flagged_display)}</div>
               <div className="stat-note">{t('flaggedNote')}</div>
             </div>
             <div className="stat">
@@ -150,7 +148,17 @@ export default function AuditPage() {
         </div>
       )}
 
-      <h2 className="section-title" id="findings-heading">{t('findings')}</h2>
+      <div className="row space-between" style={{ marginBottom: 12 }}>
+        <h2 className="section-title" id="findings-heading" style={{ margin: 0 }}>
+          {t('findings')}
+          {findings.length > 0 && <span className="count-chip">{findings.length}</span>}
+        </h2>
+        {actionable.length > 0 && (
+          <span className="muted" style={{ fontSize: 13 }}>
+            {approvedCount} {t('approvedCountLabel')}
+          </span>
+        )}
+      </div>
       {findings.length === 0 && <div className="empty">{t('noFindings')}</div>}
 
       {findings.map((f: any) => {
@@ -205,7 +213,7 @@ export default function AuditPage() {
               )}
             </div>
 
-            <p className="finding-msg">{f.message}</p>
+            <p className="finding-msg">{normaliseProse(f.message)}</p>
             {isInfo && <p className="muted" style={{ fontSize: 13, marginTop: -6, marginBottom: 14 }}>{t('underchargeNote')}</p>}
 
             <div className="amounts">
@@ -228,15 +236,15 @@ export default function AuditPage() {
                 <div className="evidence-item"><div className="label">{t('statusReason')}</div><div className="value">{f.status}{f.reason ? ` (${f.reason})` : ''}</div></div>
               </div>
               {quoteOpen && ct.quote && (
-                <div style={{ marginTop: 10 }}>
-                  <div className="evidence-item"><div className="label">{t('clauseQuote')}</div></div>
-                  <div className="quote">“{ct.quote}”</div>
-                </div>
+                <figure className="quote-block">
+                  <figcaption className="label">{t('clauseQuote')}</figcaption>
+                  <blockquote className="quote">“{ct.quote}”</blockquote>
+                </figure>
               )}
               {quoteOpen && f.calculation && (
                 <div style={{ marginTop: 10 }}>
                   <div className="evidence-item"><div className="label">{t('calculation')}</div></div>
-                  <div className="calc">{f.calculation}</div>
+                  <div className="calc">{normaliseProse(f.calculation)}</div>
                 </div>
               )}
             </div>
@@ -247,12 +255,18 @@ export default function AuditPage() {
         )
       })}
 
-      <div className="card row space-between">
+      <div className="card action-bar letter-bar">
         <div>
           <div className="card-title" style={{ fontSize: 16 }}>{t('readyLetter')}</div>
-          <div className="muted" style={{ fontSize: 14 }}>{t('readyLetterNote')}</div>
+          <div className="muted" style={{ fontSize: 14 }}>
+            {approvedCount === 0 ? t('approveAtLeastOne') : t('readyLetterNote')}
+          </div>
         </div>
-        <button className="btn btn-primary" disabled={approvedCount === 0} onClick={() => nav(`/invoices/${invoiceId}/letter`)}>
+        <button
+          className="btn btn-primary"
+          disabled={approvedCount === 0}
+          onClick={() => nav(`/invoices/${invoiceId}/letter`)}
+        >
           📝 {t('generateLetter')} ({approvedCount})
         </button>
       </div>

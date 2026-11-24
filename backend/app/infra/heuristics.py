@@ -120,7 +120,17 @@ def _sentences_with_pages(pages: list[str]) -> list[tuple[str, int]]:
     for idx, page in enumerate(pages, start=1):
         text = page.replace("\r", "")
         # Split into paragraphs and numbered clause blocks.
-        blocks = re.split(r"\n\s*\n|\n(?=\s*(?:[0-9]+[.)]|clause|article)\b)", text, flags=re.IGNORECASE)
+        #
+        # NOTE: no \b after [.)] — a word boundary requires a word character on one
+        # side, and both "." and the following space are non-word, so \b never matches
+        # there (this previously left a whole page as one block, which made clause
+        # matching grab the wrong quote and miss the maintenance cap entirely).
+        blocks = re.split(
+            r"\n\s*\n"
+            r"|\n(?=\s*(?:[0-9]{1,2}[.)]\s|clause\s+[0-9]+|article\s+[0-9]+))",
+            text,
+            flags=re.IGNORECASE,
+        )
         for block in blocks:
             flat = re.sub(r"\s+", " ", block).strip()
             if not flat:
@@ -134,14 +144,71 @@ def _sentences_with_pages(pages: list[str]) -> list[tuple[str, int]]:
     return out
 
 
-def _best_sentence(sentences: list[tuple[str, int]], include: list[str], exclude: list[str]) -> tuple[str, int] | None:
+_CLAUSE_PREFIX = re.compile(
+    r"^\s*(?:[0-9]{1,2}[.)]|clause\s+[0-9]+|article\s+[0-9]+)\s*[:.-]?\s*",
+    re.IGNORECASE,
+)
+
+
+def _lines_with_pages(pages: list[str]) -> list[tuple[str, int]]:
+    """Return (line, page) pairs for labelled metadata fields.
+
+    Labelled fields ("Effective Date: ...", "Commencement Date: ...") sit on their own
+    line and are often not sentence-terminated, so sentence splitting merges them into a
+    neighbour that may mention a *different* date. Line-level scanning keeps the quote
+    exact and avoids attributing the wrong date to a clause.
+    """
+    out: list[tuple[str, int]] = []
+    for idx, page in enumerate(pages, start=1):
+        for raw in page.splitlines():
+            line = re.sub(r"\s+", " ", raw).strip()
+            if 6 <= len(line) <= 200:
+                out.append((line, idx))
+    return out
+
+
+def _strip_clause_prefix(text: str) -> str:
+    """Drop a leading clause number/heading so the quote is the operative sentence.
+
+    The remainder is still a verbatim substring of the document, so BR6 holds.
+    """
+    return _CLAUSE_PREFIX.sub("", text).strip()
+
+
+def _pick_sentence(
+    sentences: list[tuple[str, int]],
+    include: list[str],
+    exclude: list[str],
+    *,
+    prefer_parseable=None,
+) -> tuple[str, int] | None:
+    """Choose the best clause sentence for a term.
+
+    A plain "first sentence containing the keyword" pick is wrong: headings and
+    preamble text ("This Amendment modifies the escalation clause ...") mention the
+    keyword long before the operative clause states a number. Candidates that yield a
+    parseable value are therefore ranked first, then the shorter (more specific) ones.
+    """
+    scored: list[tuple[int, int, str, int]] = []
     for text, page in sentences:
         low = text.lower()
-        if any(x in low for x in exclude):
+        if any(bad in low for bad in exclude):
             continue
-        if all(x in low for x in include):
-            return text, page
-    return None
+        if not all(good in low for good in include):
+            continue
+        score = 0
+        if prefer_parseable is not None and prefer_parseable(text) is not None:
+            score += 10            # the sentence actually states the value
+        if len(text) < 220:
+            score += 3             # short, specific clauses beat page-wide blocks
+        if low.lstrip().startswith(("this amendment", "this lease", "the parties")):
+            score -= 4             # preamble rather than an operative clause
+        scored.append((score, -len(text), text, page))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    _score, _neg_len, text, page = scored[0]
+    return _strip_clause_prefix(text), page
 
 
 def _norm(s: str) -> str:
@@ -166,10 +233,11 @@ def extract_terms_heuristic(pages: list[str], doc_kind: str) -> dict[str, Any]:
 
     if doc_kind == "lease":
         # Base rent: a rent sentence that is not about escalation/maintenance/deposit.
-        hit = _best_sentence(
+        hit = _pick_sentence(
             sentences,
             include=["rent"],
             exclude=["maintenance", "escalat", "increase", "deposit", "security", "late", "penalty", "gst", "tax"],
+            prefer_parseable=parse_rupees,
         )
         if hit:
             quote, page = hit
@@ -179,9 +247,11 @@ def extract_terms_heuristic(pages: list[str], doc_kind: str) -> dict[str, Any]:
             terms.append(_make_term("base_rent_paise", None, "", 1, 0.0))
 
         # Escalation rate
-        hit = _best_sentence(sentences, include=["escalat"], exclude=["maintenance"])
+        hit = _pick_sentence(sentences, include=["escalat"], exclude=["maintenance"],
+                             prefer_parseable=parse_percent_bp)
         if not hit:
-            hit = _best_sentence(sentences, include=["rent", "increase"], exclude=["maintenance"])
+            hit = _pick_sentence(sentences, include=["rent", "increase"], exclude=["maintenance"],
+                                 prefer_parseable=parse_percent_bp)
         if hit:
             quote, page = hit
             bp = parse_percent_bp(quote)
@@ -190,7 +260,8 @@ def extract_terms_heuristic(pages: list[str], doc_kind: str) -> dict[str, Any]:
             terms.append(_make_term("escalation_cadence_months", cadence, quote, page, 0.85 if cadence else 0.2))
 
         # Maintenance cap
-        hit = _best_sentence(sentences, include=["maintenance"], exclude=[])
+        hit = _pick_sentence(sentences, include=["maintenance"], exclude=[],
+                             prefer_parseable=parse_rupees)
         if hit:
             quote, page = hit
             capped = re.search(r"cap|not exceed|maximum|upto|up to|ceiling", quote, re.IGNORECASE)
@@ -198,23 +269,65 @@ def extract_terms_heuristic(pages: list[str], doc_kind: str) -> dict[str, Any]:
             terms.append(_make_term("maintenance_cap_paise", amount, quote, page, 0.9 if amount else 0.3))
 
         # Lease start date
-        hit = _best_sentence(sentences, include=["commence"], exclude=[])
+        hit = _pick_sentence(sentences, include=["commence"], exclude=[])
         if hit:
             quote, page = hit
-            ym = re.search(r"(\d{1,2})\s*(st|nd|rd|th)?\s+([A-Za-z]+)\s+(\d{4})", quote)
-            if ym:
-                terms.append(_make_term("lease_start_date", int(ym.group(4)) * 10000 + _month(ym.group(3)) * 100 + int(ym.group(1)), quote, page, 0.85))
+            terms.append(_make_term("lease_start_date", _find_date(quote), quote, page, 0.85))
 
     elif doc_kind == "amendment":
-        hit = _best_sentence(sentences, include=["escalat"], exclude=[])
+        hit = _pick_sentence(
+            sentences, include=["escalat"], exclude=["other terms", "remain in full force"],
+            prefer_parseable=parse_percent_bp,
+        )
         if not hit:
-            hit = _best_sentence(sentences, include=["rent", "increase"], exclude=[])
+            hit = _pick_sentence(
+                sentences, include=["rent", "increase"], exclude=["other terms", "remain in full force"],
+                prefer_parseable=parse_percent_bp,
+            )
         if hit:
             quote, page = hit
             bp = parse_percent_bp(quote)
             terms.append(_make_term("escalation_rate_bp", bp, quote, page, 0.9 if bp else 0.3))
 
+        # An amendment's effective date decides whether it applies to a billed period, so
+        # it is read from the labelled line itself. Scanning whole paragraphs risks picking
+        # up the "Original Lease Date" printed next to it, which would silently change
+        # which clause controls.
+        eff_value: int | None = None
+        eff_quote = ""
+        eff_page = 1
+        for line, page in _lines_with_pages(pages):
+            low = line.lower()
+            if not re.match(r"^\W*effective\s+date\b", low):
+                continue
+            candidate = _find_date(line)
+            if candidate is not None:
+                eff_value, eff_quote, eff_page = candidate, line, page
+                break
+        terms.append(_make_term(
+            "amendment_effective_date", eff_value, eff_quote, eff_page,
+            0.9 if eff_value else 0.2,
+        ))
+
     return {"terms": terms}
+
+
+def _find_date(text: str) -> int | None:
+    """Find a date in text and return it as a YYYYMMDD integer (the app's date format)."""
+    m = re.search(r"(\d{1,2})\s*(?:st|nd|rd|th)?\s+([A-Za-z]+)\s+(\d{4})", text)
+    if m:
+        month = _month(m.group(2))
+        if month:
+            return int(m.group(3)) * 10000 + month * 100 + int(m.group(1))
+    m = re.search(r"([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})", text)
+    if m:
+        month = _month(m.group(1))
+        if month:
+            return int(m.group(3)) * 10000 + month * 100 + int(m.group(2))
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if m:
+        return int(m.group(1)) * 10000 + int(m.group(2)) * 100 + int(m.group(3))
+    return None
 
 
 _MONTHS = {
@@ -223,8 +336,8 @@ _MONTHS = {
 }
 
 
-def _month(name: str) -> int:
-    return _MONTHS.get(name.lower(), 1)
+def _month(name: str) -> int | None:
+    return _MONTHS.get(name.lower())
 
 
 # --- invoice parsing ---------------------------------------------------------

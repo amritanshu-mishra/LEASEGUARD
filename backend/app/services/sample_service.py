@@ -112,9 +112,20 @@ SAMPLE_INVOICE_ITEMS = [
 ]
 
 
+SAMPLE_LABEL = "Shop 12, Market Complex, Hazratganj, Lucknow"
+
+
 def load_sample_case(user_id: str) -> dict:
-    # avoid duplicating sample if already exists for demo simplicity: create fresh each time? Better create fresh.
-    lease = store.create_lease(user_id, "Shop 12, Market Complex, Hazratganj, Lucknow", "2025-04-01", "2028-03-31")
+    """Create the demo case, or return it unchanged if it already exists.
+
+    Loading the sample repeatedly must be idempotent: duplicates make the dashboard
+    look broken and confuse a live demo.
+    """
+    existing = _existing_sample(user_id)
+    if existing:
+        return existing
+
+    lease = store.create_lease(user_id, SAMPLE_LABEL, "2025-04-01", "2028-03-31")
     lease_id = lease["id"]
 
     lease_pages = _load_pages("lease")
@@ -144,4 +155,22 @@ def load_sample_case(user_id: str) -> dict:
     invoice = store.create_invoice(lease_id, inv_doc["id"], "2026-04-01", "April 2026", SAMPLE_INVOICE_ITEMS)
 
     store.log_event(user_id, "sample_loaded", "lease", lease_id)
-    return {"lease": store.get_lease(lease_id, user_id), "invoice": invoice}
+    return {"lease": store.get_lease(lease_id, user_id), "invoice": invoice, "reused": False}
+
+
+def _existing_sample(user_id: str) -> dict | None:
+    for lease in store.list_leases(user_id):
+        if lease.get("property_label") != SAMPLE_LABEL:
+            continue
+        docs = store.list_documents(lease["id"])
+        if not any(d["kind"] == "invoice" for d in docs):
+            continue
+        invoices = store.list_invoices(lease["id"])
+        if not invoices:
+            continue
+        return {
+            "lease": store.get_lease(lease["id"], user_id),
+            "invoice": invoices[0],
+            "reused": True,
+        }
+    return None

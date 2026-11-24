@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date
+from datetime import date, datetime
+
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -48,7 +49,13 @@ def list_leases():
 def create_sample():
     result = load_sample_case(DEMO_USER_ID)
     lease = result["lease"]
-    return {"ok": True, "lease_id": lease["id"], "invoice_id": result["invoice"]["id"], "lease": lease}
+    return {
+        "ok": True,
+        "lease_id": lease["id"],
+        "invoice_id": result["invoice"]["id"],
+        "lease": lease,
+        "reused": bool(result.get("reused")),
+    }
 
 
 @router.post("/leases")
@@ -79,6 +86,17 @@ async def upload_document(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=422, detail={"error": {"code": "empty_file", "message": "The uploaded file is empty."}})
+    if effective_date is not None:
+        # Validate the date before parsing the file: a typo in the date should say so,
+        # not produce a confusing complaint about the file contents.
+        try:
+            datetime.strptime(effective_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": {"code": "invalid_effective_date",
+                                  "message": "effective_date must be YYYY-MM-DD."}},
+            )
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(status_code=413, detail={"error": {"code": "file_too_large", "message": f"File must be under {MAX_UPLOAD_MB} MB."}})
 
@@ -118,8 +136,22 @@ async def upload_document(
             })
         label = parsed["period_label"] or eff[:7]
         invoice = store.create_invoice(lease_id, doc["id"], eff, label, parsed["line_items"])
-        response.update({"invoice_id": invoice["id"], "line_items": parsed["line_items"], "period_label": label,
-                         "extractor": parsed["extractor"], "invoice": invoice})
+        kinds_found = {li.get("kind") for li in parsed["line_items"]}
+        invoice_warnings = []
+        if "rent" not in kinds_found:
+            invoice_warnings.append(
+                "No rent line was found in this invoice, so rent cannot be checked. "
+                "If the rent is on the bill, upload a clearer copy."
+            )
+        if "maintenance" not in kinds_found:
+            invoice_warnings.append(
+                "No maintenance/CAM line was found. Only rent will be checked for this invoice."
+            )
+        response.update({
+            "invoice_id": invoice["id"], "line_items": parsed["line_items"],
+            "period_label": label, "extractor": parsed["extractor"], "invoice": invoice,
+            "warnings": invoice_warnings,
+        })
     else:
         parsed = await extraction.extract_terms(pages, kind)
         terms = []
@@ -135,10 +167,34 @@ async def upload_document(
             })
         store.replace_terms_for_document(doc["id"], lease_id, terms)
         uncertain = [t["term_type"] for t in terms if t.get("ambiguous") or not t.get("source_quote")]
+        found = [t["term_type"] for t in terms if t.get("value") is not None and not t.get("ambiguous")]
+
+        # Tell the user plainly when a document yielded nothing usable. Silently
+        # accepting it would mean an later audit says "term_not_found" with no
+        # indication that the upload itself was the problem.
+        warnings: list[str] = []
+        if kind == "lease" and not found:
+            warnings.append(
+                "No lease terms could be read from this file. Check that it is the lease "
+                "agreement with text (not a photo), then upload it again."
+            )
+        elif kind == "amendment" and "escalation_rate_bp" not in found:
+            warnings.append(
+                "The amendment uploaded, but its escalation clause could not be read. "
+                "It will not change any charge until that clause is extracted."
+            )
+        if kind == "amendment" and "amendment_effective_date" not in found:
+            warnings.append(
+                "The amendment's effective date could not be read. Enter it in the "
+                "effective-date field so the correct clause controls."
+            )
+
         response.update({
             "terms": terms,
             "extractor": parsed.get("extractor", "heuristic"),
             "uncertain_terms": uncertain,
+            "found_terms": found,
+            "warnings": warnings,
         })
 
     # Surface per-page text so the UI can show the real page the quote came from.

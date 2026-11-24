@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
+import { normaliseInr } from '../format'
 import { useLang } from '../i18nContext'
 
 export default function LetterPage() {
@@ -79,7 +80,7 @@ export default function LetterPage() {
         </div>
         <div className="stat">
           <div className="stat-label">{t('totalFlagged')}</div>
-          <div className="stat-value red">{letter.total_flagged_display}</div>
+          <div className="stat-value red">{normaliseInr(letter.total_flagged_display)}</div>
           <div className="stat-note">{t('notClaim')}</div>
         </div>
         <div className="stat">

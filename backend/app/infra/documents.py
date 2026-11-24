@@ -24,12 +24,44 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
+# Image signatures that are frequently renamed to .pdf by phone/gallery exports.
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "PNG image"),
+    (b"\xff\xd8\xff", "JPEG image"),
+    (b"GIF87a", "GIF image"),
+    (b"GIF89a", "GIF image"),
+    (b"RIFF", "WebP image"),
+)
+
+
+def _sniff_image(data: bytes) -> str | None:
+    for magic, label in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return label
+    return None
+
+
 def parse_pages(filename: str, data: bytes) -> list[str]:
     name = (filename or "").lower()
+
+    # An image renamed to .pdf: say so plainly instead of "corrupted PDF".
+    image_kind = _sniff_image(data)
+    if image_kind:
+        raise DocumentParseError(
+            f"This looks like a {image_kind}, not a text-based PDF. "
+            "Upload a PDF or text file, or paste the text."
+        )
+
     if data[:4] == PDF_MAGIC or name.endswith(".pdf"):
         return _parse_pdf(data)
     if name.endswith((".txt", ".md", ".text")) or _looks_texty(data):
-        return [_clean(data.decode("utf-8", errors="replace"))]
+        text = _clean(data.decode("utf-8", errors="replace"))
+        if len(text) < 20:
+            raise DocumentParseError(
+                "This file has almost no readable text. Check that the upload is the "
+                "document itself, not a blank or near-empty file."
+            )
+        return [text]
     if name.endswith((".png", ".jpg", ".jpeg", ".webp", ".heic")):
         raise DocumentParseError(
             "Image invoices are not supported yet. Please upload a PDF or paste the text."

@@ -97,6 +97,9 @@ this repository.
 | Requirement | Where it lives |
 |---|---|
 | **Groq instead of Anthropic** | `backend/app/infra/extraction.py` — OpenAI-compatible Groq chat completions (`GROQ_API_KEY`, `llama-3.3-70b-versatile`), with a deterministic fallback |
+| **Full accessibility floor** | Skip link, landmark regions, AA contrast on every text pair (verified numerically, `--muted` darkened from 4.39:1 to 5.02:1), visible focus rings, `aria-pressed` on the language toggle, `role="alert"` on every error, live `role="status"` on uploads, and no colour-only state signalling |
+| **Brutal upload feedback** | Wrong file type, an image renamed `.pdf`, an empty file, a file with no readable terms, a duplicate upload and a missing date each produce a specific sentence, not a generic "failed" |
+| **Idempotent demo** | Loading the sample case twice returns the same lease instead of duplicating it, so a live demo cannot leave a mess |
 | **WhatsApp share, not PDF download** | `frontend/src/pages/LetterPage.tsx` — `wa.me/?text=…` with the letter pre-filled, plus copy-to-clipboard. The tenant presses send; nothing is automated |
 | **Hindi on key screens** | `frontend/src/i18n.ts` — ~110 EN/HI strings; EN/हिंदी toggle in the header, 9+ Hindi buttons, and a **Hindi dispute letter** for forwarding |
 | **Evidence UI** | Every finding shows document name, page, effective date, verbatim clause quote and the full calculation string (`AuditPage.tsx`) |
@@ -175,11 +178,11 @@ Base path `/api`. JSON in, JSON out.
 
 ```bash
 cd backend
-PYTHONPATH=. pytest -q                                    # 48 tests
+PYTHONPATH=. pytest -q                                    # 58 tests
 PYTHONPATH=. pytest -q --cov=app.domain --cov=app.services --cov-fail-under=90
 ```
 
-**48 tests, 94% branch coverage** on the domain + service layers (the spec target is 90%).
+**58 tests, 94% branch coverage** on the domain + service layers (the spec target is 90%).
 CI runs the same gate on every push (`.github/workflows/ci.yml`).
 
 - `tests/domain/test_golden_cases.py` — the spec's golden cases **G1–G6** and unit cases
@@ -217,7 +220,7 @@ backend/app/
     letter_service.py      EN/HI dispute letter
     sample_service.py      synthetic sample case
 frontend/src/
-  pages/                   Dashboard, LeaseDetail, AuditPage, LetterPage, NewLeasePage
+  pages/                   Dashboard, NewLeasePage, LeaseDetail, AuditPage, LetterPage, ActivityPage
   i18n.ts                  EN/HI strings
 scripts/make_samples.py    generates the synthetic PDFs
 samples/                   the three synthetic PDFs

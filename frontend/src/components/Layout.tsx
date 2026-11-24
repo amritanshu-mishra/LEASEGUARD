@@ -18,6 +18,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </Link>
         <div className="topbar-actions">
+          <Link className="topbar-link" to="/activity">{t('activity')}</Link>
           <div className="lang-toggle" role="group" aria-label="Choose language / भाषा चुनें">
             <button
               type="button"
