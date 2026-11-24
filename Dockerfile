@@ -10,7 +10,10 @@ FROM python:3.11-slim
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY backend/requirements.txt ./backend/requirements.txt
-RUN pip install --no-cache-dir -r backend/requirements.txt
+COPY scripts/install_backend.sh ./scripts/install_backend.sh
+# Installs requirements, then puts a working (headless) cv2 on disk. A plain
+# `pip install -r` leaves cv2 needing libGL.so.1, which this image lacks.
+RUN bash scripts/install_backend.sh
 COPY backend/ ./backend/
 COPY --from=webbuild /app/frontend/dist ./frontend/dist
 COPY samples/ ./samples/

@@ -8,12 +8,25 @@ pypdf==5.1.0
 python-dotenv==1.0.1
 
 # OCR: reading scanned or photographed leases (app/infra/ocr.py).
-# opencv-python-headless is required, not optional: the default opencv-python
-# wheel needs libGL.so.1, which slim server images do not ship, and importing it
-# raises ImportError. Headless is the same library without GUI bindings.
+#
+# Deployment gotcha, measured on a slim image: rapidocr-onnxruntime declares
+# `opencv-python`, whose wheel links against libGL.so.1. Slim server images do
+# not ship libGL, so `import cv2` raises ImportError and OCR is dead on arrival.
+# `opencv-python-headless` is the same library without GUI/library dependencies,
+# but both distributions ship an identical `cv2/cv2.abi3.so`, so whichever is
+# installed last wins.
+#
+# The reliable install is therefore two steps, and that is what the Dockerfile,
+# render.yaml and CI do:
+#     pip install -r requirements.txt
+#     pip install --force-reinstall --no-deps opencv-python-headless==5.1.0.95
+# `pip install -r requirements.txt` alone leaves a broken cv2. The OCR tests
+# catch that: they fail rather than skip if the engine is installed but cannot
+# import, so this cannot regress quietly.
 rapidocr-onnxruntime==1.4.4
 pymupdf==2.1
 pillow==11.3.0
+# Listed so the version is pinned; see the note above about installation order.
 opencv-python-headless==5.1.0.95
 
 # Test / dev tooling (kept here so `pip install -r` is enough for judges)

@@ -41,6 +41,23 @@ _engine_lock = threading.Lock()
 _engine_error: str | None = None
 
 
+def installed() -> bool:
+    """True when the OCR package is present, whether or not it can be used.
+
+    Distinguished from `available()` so tests can tell "this machine has no OCR
+    support" (skip) from "OCR is installed and broken" (fail). That difference
+    matters: a headless server with a GUI-linked cv2 installs fine and then
+    raises ImportError("libGL.so.1") at import time, which is exactly the state
+    that should fail a build rather than silently disable a feature.
+    """
+    try:
+        import importlib.util  # noqa: PLC0415
+
+        return importlib.util.find_spec("rapidocr_onnxruntime") is not None
+    except Exception:
+        return False
+
+
 def available() -> bool:
     """True when the OCR engine can actually be loaded on this machine."""
     return _load_engine() is not None

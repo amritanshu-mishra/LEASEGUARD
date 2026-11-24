@@ -22,6 +22,12 @@ os.environ["USE_FIXTURES"] = "true"
 from app.main import app  # noqa: E402
 from app.infra import ocr  # noqa: E402
 
+if ocr.installed() and not ocr.available():
+    raise RuntimeError(
+        "OCR is installed but cannot load: "
+        f"{ocr.unavailable_reason()}. Run scripts/install_backend.sh."
+    )
+
 pytestmark = pytest.mark.skipif(not ocr.available(), reason="OCR engine not installed")
 
 

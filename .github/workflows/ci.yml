@@ -16,7 +16,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install -r backend/requirements.txt
+        run: bash scripts/install_backend.sh
       - name: Compile check
         run: python -m compileall backend/app -q
       - name: Run tests
@@ -45,10 +45,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      # OCR dependencies are needed because the app imports them at startup now.
-      # They are pure wheels; no system OCR engine is installed or required.
+      # The E2E job starts the app, so it needs the backend dependencies. The
+      # script also guarantees a working cv2 (see its header) and fails loudly
+      # if OCR would be broken at runtime rather than leaving it to a tenant.
       - name: Install backend dependencies
-        run: python -m pip install -r backend/requirements.txt
+        run: bash scripts/install_backend.sh
 
       - name: Install frontend dependencies
         working-directory: frontend

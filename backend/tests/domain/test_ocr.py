@@ -17,7 +17,20 @@ from app.infra import documents, ocr
 
 
 def _pytest_ocr_available() -> bool:
-    return ocr.available()
+    """Skip when OCR is absent; FAIL when it is installed but cannot load.
+
+    An installed-but-unimportable engine (the libGL.so.1 case) is a deployment
+    bug, not a reason to quietly run without OCR coverage.
+    """
+    if ocr.available():
+        return True
+    if ocr.installed():
+        pytest.fail(
+            "OCR is installed but cannot load: "
+            f"{ocr.unavailable_reason()}. Run scripts/install_backend.sh - "
+            "a GUI-linked opencv-python wheel likely replaced the headless one."
+        )
+    return False
 
 
 def _render_pdf(text_lines: list[str], path: Path) -> Path:
@@ -168,3 +181,6 @@ class TestScannedDocuments:
 
     def test_ocr_available_is_a_bool(self):
         assert isinstance(ocr.available(), bool)
+
+    def test_installed_is_a_bool(self):
+        assert isinstance(ocr.installed(), bool)
