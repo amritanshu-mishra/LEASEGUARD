@@ -1,4 +1,4 @@
-# Demo Script — LeaseGuard (4 minutes)
+# Demo Script — LeaseGuard (4 minutes 20)
 
 Target: a judge who has 3 minutes and 40 seconds of patience. Goal: they should remember
 **one** thing — *every discrepancy comes with the clause, the page and the arithmetic.*
@@ -88,7 +88,7 @@ Then show the second finding: **Maintenance cap, page 4** of the lease. Open the
 - Say: *"No API key configured — this is the deterministic extractor, and every value is
   still traceable to a quote in the file."*
 
-### 3:10–3:35 — A photo, and a number that is wrong
+### 3:10–3:45 — A photo, a wrong number, and a clause that is unclear
 
 Two features judges tend to probe, both worth 20 seconds:
 
@@ -102,9 +102,19 @@ Two features judges tend to probe, both worth 20 seconds:
   evidence. Say: *"The machine is allowed to be wrong. It is not allowed to pretend it
   wasn't corrected."*
 
+- **A clause the document doesn't settle.** Upload a lease with no maintenance clause. The
+  row reads **Uncertain** and offers **Enter value**. Type one, and the audit immediately
+  produces a finding. Say: *"Uncertain used to be where the product stopped. Now it's where
+  the tenant takes over - and what they type is labelled as theirs, with no document cited."*
+
+  If there are two amendments that disagree (upload two with the same effective date and
+  different rates), the row lists both and offers **Use this clause**. Choosing one resolves
+  the audit. Say: *"We don't guess which clause wins. The tenant picks, and we record that
+  it was their choice."*
+
 Optionally: open a second private window and show the two browsers do not share data.
 
-### 3:35–3:55 — Close
+### 3:45–4:20 — Close
 
 > "LeaseGuard doesn't recover money and it doesn't give legal advice. It makes a silent,
 > repeating loss visible — with evidence a landlord cannot brush aside — and it does it in

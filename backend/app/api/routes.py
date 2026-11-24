@@ -128,12 +128,16 @@ async def upload_document(
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(status_code=413, detail={"error": {"code": "file_too_large", "message": f"File must be under {MAX_UPLOAD_MB} MB."}})
 
-    limits.enforce(limits.UPLOAD_LIMIT, user_id, "uploads")
-
     sha = hashlib.sha256(data).hexdigest()
     existing = next((d for d in store.list_documents(lease_id) if d.get("sha256") == sha), None)
     if existing:
         raise HTTPException(status_code=409, detail={"error": {"code": "duplicate_document", "message": "This exact file was already uploaded to this lease."}})
+
+    # Counted only after the cheap checks pass. A rejected duplicate or an
+    # oversized file costs nothing to answer, and spending the tenant's upload
+    # allowance on it would lock out someone simply retrying the same file by
+    # mistake - which is a normal thing to do, not abuse.
+    limits.enforce(limits.UPLOAD_LIMIT, user_id, "uploads")
 
     try:
         pages = docparse.parse_pages(file.filename or "", data)

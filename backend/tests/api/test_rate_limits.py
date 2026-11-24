@@ -57,7 +57,15 @@ def _lease(client: TestClient, label: str) -> str:
 
 
 def _upload(client: TestClient, lease_id: str, name: str):
-    text = "COMMERCIAL LEASE\nMonthly Rent of Rs. 40,000 per month.\nCommencement Date: 1 April 2025\n"
+    # Distinct bytes per file: identical content is rejected as a duplicate (409)
+    # before it ever reaches the limiter, which would make these tests pass or
+    # fail for the wrong reason.
+    text = (
+        "COMMERCIAL LEASE\n"
+        f"Reference: {name}\n"
+        "Monthly Rent of Rs. 40,000 per month.\n"
+        "Commencement Date: 1 April 2025\n"
+    )
     return client.post(
         f"/api/leases/{lease_id}/documents",
         files={"file": (name, text.encode(), "text/plain")},
