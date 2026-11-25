@@ -108,3 +108,99 @@ def test_negative_value_is_rejected():
         r = c.patch(f"/api/terms/{term_id}", json={"value": -5}, cookies=COOKIES)
         assert r.status_code == 422
         assert "negative" in r.json()["detail"]["error"]["message"].lower()
+
+
+def test_decision_must_be_a_real_boolean():
+    """`{"approved": "yes"}` used to return 200.
+
+    Pydantic's lax mode coerces the string "yes" to True, and "false" (a string) to
+    False. So a malformed client request or a hand-written curl silently decided a
+    finding, and an approval ends up in a letter to the landlord. A typo must be a
+    422, never a decision.
+    """
+    c, lease_id, invoice_id = _lease_with_invoice()
+    with c:
+        audit = c.post(f"/api/leases/{lease_id}/audit?invoice_id={invoice_id}", cookies=COOKIES).json()
+        finding_id = audit["findings"][0]["id"]
+
+        for bad in ("yes", "true", "false", 1, 0, None):
+            r = c.patch(f"/api/findings/{finding_id}", json={"approved": bad}, cookies=COOKIES)
+            assert r.status_code == 422, f"accepted {bad!r} as a decision"
+
+        # A real boolean still works, in both directions.
+        assert c.patch(f"/api/findings/{finding_id}", json={"approved": True}, cookies=COOKIES).status_code == 200
+        assert c.patch(f"/api/findings/{finding_id}", json={"approved": False}, cookies=COOKIES).status_code == 200
+
+
+def test_letter_language_must_be_supported():
+    """An unsupported language used to return 200 in English.
+
+    A Hindi-only reader would have sent `?language=hin` and received an English
+    letter that looked like a success. Reject it instead of silently answering a
+    different question.
+    """
+    c, lease_id, invoice_id = _lease_with_invoice()
+    with c:
+        audit = c.post(f"/api/leases/{lease_id}/audit?invoice_id={invoice_id}", cookies=COOKIES).json()
+        # A letter needs at least one approved finding; that gate is deliberate.
+        c.patch(f"/api/findings/{audit['findings'][0]['id']}", json={"approved": True}, cookies=COOKIES)
+        for bad in ("fr", "EN", "", "hin", "en-US", " hi"):
+            r = c.post(f"/api/invoices/{invoice_id}/letter?language={bad}", cookies=COOKIES)
+            assert r.status_code == 422, f"accepted language={bad!r}"
+
+        ok_en = c.post(f"/api/invoices/{invoice_id}/letter?language=en", cookies=COOKIES)
+        assert ok_en.status_code == 200
+        ok_hi = c.post(f"/api/invoices/{invoice_id}/letter?language=hi", cookies=COOKIES)
+        assert ok_hi.status_code == 200
+        assert ok_en.json()["language"] == "en"
+        assert ok_hi.json()["language"] == "hi"
+        # The two letters must actually differ: a "successful" Hindi request that
+        # returns English text is the failure this endpoint used to hide.
+        assert ok_hi.json()["text"] != ok_en.json()["text"]
+
+        # Omitting the parameter keeps working (English default).
+        assert c.post(f"/api/invoices/{invoice_id}/letter", cookies=COOKIES).status_code == 200
+
+
+def test_a_blank_correction_cannot_erase_a_clause_value():
+    """`PATCH /terms/{id}` with `{}` used to return 200 and write NULL.
+
+    The store passes `value` straight into SQL, so an empty body erased the
+    extracted base rent (Rs 40,000 -> nothing) and still reported success. A
+    correction is an edit; if the tenant means to remove the lease there is a
+    delete for that.
+    """
+    c, lease_id, invoice_id = _lease_with_invoice()
+    with c:
+        before = c.get(f"/api/leases/{lease_id}", cookies=COOKIES).json()["terms_in_force"]
+        rent = [t for t in before if t["term_type"] == "base_rent_paise"][0]
+        assert rent["value"] == 4_000_000
+
+        for body in ({}, {"value": None}):
+            r = c.patch(f"/api/terms/{rent['term_id']}", json=body, cookies=COOKIES)
+            assert r.status_code == 422, f"accepted {body} and would have cleared the term"
+            assert r.json()["detail"]["error"]["code"] == "missing_value"
+
+        after = c.get(f"/api/leases/{lease_id}", cookies=COOKIES).json()["terms_in_force"]
+        rent_after = [t for t in after if t["term_type"] == "base_rent_paise"][0]
+        assert rent_after["value"] == 4_000_000, "the rejected request still changed the value"
+
+
+def test_a_correction_value_must_be_a_real_number():
+    """A string was coerced by pydantic, so `"40000"` silently became a correction.
+
+    Lax coercion hides a client bug until the number is in a letter. Require an
+    actual integer; the UI already sends one.
+    """
+    c, lease_id, invoice_id = _lease_with_invoice()
+    with c:
+        terms = c.get(f"/api/leases/{lease_id}", cookies=COOKIES).json()["terms_in_force"]
+        term_id = [t for t in terms if t["term_type"] == "base_rent_paise"][0]["term_id"]
+
+        for bad in ("40000", 1.5, True, [40000], {"v": 1}):
+            r = c.patch(f"/api/terms/{term_id}", json={"value": bad}, cookies=COOKIES)
+            assert r.status_code == 422, f"accepted {bad!r} as a term value"
+
+        ok = c.patch(f"/api/terms/{term_id}", json={"value": 4_100_000}, cookies=COOKIES)
+        assert ok.status_code == 200
+        assert ok.json()["term"]["value_integer"] == 4_100_000

@@ -241,6 +241,11 @@ export const strings = {
     hi: 'दो शर्तें एक-दूसरे का खंडन करती हैं। जो लागू होती है उसे चुनें:',
   },
   valueSaved: { en: 'Saved. The audit has been re-run.', hi: 'सहेजा गया। जांच दोबारा चलाई गई।' },
+  lostSession: {
+    en: 'This browser no longer has the session that holds this lease. Clearing cookies, private browsing, or a blocked cookie will do this. The data was not deleted - it is simply not reachable from here.',
+    hi: 'इस ब्राउज़र में वह सत्र नहीं है जिसमें यह अनुबंध है। कुकीज़ साफ़ करने, निजी ब्राउज़िंग, या कुकी ब्लॉक होने पर ऐसा होता है। डेटा मिटाया नहीं गया - बस यहाँ से पहुँच नहीं है।',
+  },
+  reloadSample: { en: 'Reload the sample case', hi: 'नमूना केस फिर लोड करें' },
   correctValue: { en: 'Correct value', hi: 'सही मान' },
   correctedByYou: { en: 'corrected by you', hi: 'आपने सुधारा' },
   correctedHint: {

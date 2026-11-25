@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from ..core.config import MAX_UPLOAD_MB, UPLOAD_DIR
 from ..core import limits
@@ -21,12 +21,44 @@ router = APIRouter(prefix="/api")
 
 
 class DecisionBody(BaseModel):
+    # Strict on purpose. Pydantic's default coercion accepts the string "yes" as
+    # True, so a client that sends {"approved": "yes"} - or sends "false" as a
+    # string, which coerces to False and looks like it worked - would silently
+    # decide a finding. An approval ends up in a letter sent to a landlord, so it
+    # has to be an actual boolean.
     approved: bool
+
+    @field_validator("approved", mode="before")
+    @classmethod
+    def _must_be_a_real_boolean(cls, v):
+        if not isinstance(v, bool):
+            raise ValueError("approved must be true or false, not a string or number")
+        return v
 
 
 class CorrectionBody(BaseModel):
+    """A tenant's replacement value for one extracted term.
+
+    `value` is intentionally still optional at the type level so the endpoint can
+    give a precise error, but a request that omits it is rejected: the store
+    writes it straight through, and NULL would erase an extracted rent figure
+    while reporting success. A correction is an edit, not a deletion.
+    """
+
     value: int | None = None
     note: str | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _must_be_a_real_integer(cls, v):
+        # Pydantic would quietly turn "40000" into 40000. A rent figure arriving
+        # as a string means the caller is confused about the contract, and the
+        # number ends up in a letter to a landlord; make it explicit instead.
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError("value must be a whole number of paise")
+        return v
 
 
 class UserTermBody(BaseModel):
@@ -90,7 +122,38 @@ def create_lease(body: LeaseBody, user_id: str = Depends(current_user)):
     label = (body.property_label or "").strip()
     if len(label) < 3:
         raise HTTPException(status_code=422, detail={"error": {"code": "invalid_lease", "message": "Property name is too short."}})
-    lease = store.create_lease(user_id, label, body.start_date or "2025-04-01", body.end_date or "2028-03-31")
+
+    # Dates were previously stored unchecked. A typo such as "not-a-date" was
+    # accepted, saved, and then blew up later - the upload path falls back to the
+    # lease start date, so a bad lease date produced a confusing
+    # "effective_date must be YYYY-MM-DD" error on a request that never sent one.
+    start = (body.start_date or "").strip() or None
+    end = (body.end_date or "").strip() or None
+    for value, name in ((start, "start_date"), (end, "end_date")):
+        if value is None:
+            continue
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            raise HTTPException(status_code=422, detail={
+                "error": {"code": "invalid_date",
+                          "message": f"{name} must be a real date in YYYY-MM-DD form."}}) from None
+
+    # Fill a missing side from the other rather than from a fixed constant, so a
+    # lease created for 2026 is not silently given a 2025 start.
+    if start and not end:
+        end = (date.fromisoformat(start) + timedelta(days=365 * 3)).isoformat()
+    if end and not start:
+        start = (date.fromisoformat(end) - timedelta(days=365 * 3)).isoformat()
+
+    start = start or "2025-04-01"
+    end = end or "2028-03-31"
+    if date.fromisoformat(end) <= date.fromisoformat(start):
+        raise HTTPException(status_code=422, detail={
+            "error": {"code": "invalid_date_range",
+                      "message": "The lease end date must be after its start date."}})
+
+    lease = store.create_lease(user_id, label, start, end)
     store.log_event(user_id, "lease_created", "lease", lease["id"])
     return {"ok": True, "lease_id": lease["id"], "lease": lease}
 
@@ -325,7 +388,14 @@ def correct_term(term_id: str, body: CorrectionBody, user_id: str = Depends(curr
     existing = store.get_term_for_user(term_id, user_id)
     if not existing:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Term not found"}})
-    if body.value is not None and body.value < 0:
+    if body.value is None:
+        raise HTTPException(status_code=422, detail={
+            "error": {
+                "code": "missing_value",
+                "message": "Send the corrected value. A term cannot be cleared; delete the lease instead.",
+            }
+        })
+    if body.value < 0:
         raise HTTPException(status_code=422, detail={
             "error": {"code": "invalid_value", "message": "A term value cannot be negative."}})
     updated = store.correct_term(term_id, user_id, body.value, body.note or "")
@@ -435,7 +505,11 @@ def decide_finding(finding_id: str, body: DecisionBody, user_id: str = Depends(c
 
 
 @router.post("/invoices/{invoice_id}/letter")
-def generate_letter(invoice_id: str, language: str = Query(default="en"), user_id: str = Depends(current_user)):
+def generate_letter(
+    invoice_id: str,
+    language: str = Query(default="en", pattern="^(en|hi)$"),
+    user_id: str = Depends(current_user),
+):
     invoice = store.get_invoice(invoice_id, user_id)
     if not invoice:
         raise HTTPException(status_code=404, detail={"error": {"code": "not_found", "message": "Invoice not found"}})

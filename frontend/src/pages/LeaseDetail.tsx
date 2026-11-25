@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api } from '../api'
+import { api, looksLikeLostSession } from '../api'
 import { useLang } from '../i18nContext'
 import { UploadDocument } from '../components/UploadDocument'
 
@@ -21,6 +21,7 @@ export default function LeaseDetail() {
   const [editValue, setEditValue] = useState('')
   const [editError, setEditError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [lostSession, setLostSession] = useState(false)
 
   const load = useCallback(async (date?: string) => {
     setErr('')
@@ -29,7 +30,11 @@ export default function LeaseDetail() {
       setLease(data)
       setAsOf(prev => prev || data.as_of)
     } catch (e: any) {
-      setErr(e.message || 'Failed to load lease')
+      // A 404 here is nearly always a lost cookie rather than a deleted lease.
+      // Saying "not found" leaves the user with no idea what happened; saying what
+      // probably happened costs nothing and is usually right.
+      setErr(looksLikeLostSession(e) ? t('lostSession') : (e.message || 'Failed to load lease'))
+      setLostSession(looksLikeLostSession(e))
     } finally {
       setLoading(false)
     }
@@ -138,7 +143,35 @@ export default function LeaseDetail() {
   }
 
   if (loading) return <div className="loading" role="status">{t('loadingLease')}</div>
-  if (err && !lease) return <div className="error" role="alert">{err}</div>
+  if (err && !lease) {
+    return (
+      <div className="card">
+        <div className="error" role="alert" style={{ marginBottom: 16 }}>{err}</div>
+        {lostSession && (
+          // The lease the URL points at is not reachable from this browser. The
+          // sample case can be re-created in one click, which at least leaves the
+          // user with a working app rather than a dead end.
+          <button
+            className="btn btn-primary"
+            onClick={async () => {
+              try {
+                const res = await api.loadSample()
+                nav(`/leases/${res.lease_id}`)
+                window.location.reload()
+              } catch (e: any) {
+                setErr(e.message || 'Could not reload the sample case')
+              }
+            }}
+          >
+            {t('reloadSample')}
+          </button>
+        )}
+        <div style={{ marginTop: 16 }}>
+          <Link to="/" className="backlink">← {t('dashboard')}</Link>
+        </div>
+      </div>
+    )
+  }
   if (!lease) return <div className="error">{t('leaseNotFound')}</div>
 
   return (

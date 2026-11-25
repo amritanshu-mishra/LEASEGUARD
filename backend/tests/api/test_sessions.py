@@ -95,6 +95,8 @@ def test_session_cookie_is_httponly():
         r = a.get("/api/leases")
         cookie = r.headers.get("set-cookie", "")
         assert "httponly" in cookie.lower(), "session cookie must not be readable by JS"
+        # Plain HTTP locally is same-site, so Lax is right there; over TLS the
+        # cookie must be SameSite=None so it is sent inside a cross-origin iframe.
         assert "samesite=lax" in cookie.lower().replace(" ", "")
 
 
@@ -108,3 +110,70 @@ def test_cannot_delete_another_tenants_documents_from_disk():
         before = len(list(UPLOAD_DIR.iterdir()))
         assert b.delete(f"/api/leases/{lease_id}").status_code == 404
         assert len(list(UPLOAD_DIR.iterdir())) == before, "a stranger's request removed files"
+
+
+def test_cookie_is_secure_behind_a_tls_proxy_and_not_on_plain_http():
+    """A hardcoded secure=False breaks a deployed HTTPS URL.
+
+    Behind a TLS proxy the browser is on https:// while uvicorn sees plain HTTP,
+    so the flag has to come from X-Forwarded-Proto. Getting this wrong is silent:
+    the cookie is not stored, every request becomes a new visitor, and the demo
+    looks like it loses data.
+    """
+    c = TestClient(app)
+    https = c.get("/api/leases", headers={"X-Forwarded-Proto": "https"})
+    assert "Secure" in "; ".join(https.headers.get_list("set-cookie"))
+
+    plain = TestClient(app).get("/api/leases")
+    assert "Secure" not in "; ".join(plain.headers.get_list("set-cookie"))
+
+
+def test_framed_https_app_gets_a_third_party_usable_cookie():
+    """The preview renders the app in a cross-origin iframe.
+
+    A SameSite=Lax cookie is not attached to requests from a framed page, so the
+    browser is a new visitor on every call: loading the sample succeeds and the
+    next page 404s. Secure+None is the only pairing browsers send in that context.
+    """
+    c = TestClient(app)
+    r = c.get("/api/leases", headers={"X-Forwarded-Proto": "https"})
+    cookie = "; ".join(r.headers.get_list("set-cookie")).lower().replace(" ", "")
+    assert "samesite=none" in cookie, cookie
+    assert "secure" in cookie
+
+
+def test_identity_survives_when_the_browser_drops_the_cookie():
+    """Embedded/ITP browsers discard third-party cookies.
+
+    The token is also returned in a header so the page can replay it; that must be
+    enough to keep reading the same lease after the cookie is gone.
+    """
+    with TestClient(app) as a:
+        created = a.post("/api/leases", json={"property_label": "No-Cookie Shop"}).json()
+        lease_id = created["lease_id"]
+        token = a.get("/api/leases").headers.get("X-Session-Token")
+        assert token, "server must also hand the token back in a header"
+
+    # A fresh client that has never stored a cookie, only the header.
+    b = TestClient(app)
+    with b:
+        b.cookies.clear()
+        assert b.get(f"/api/leases/{lease_id}", headers={"X-Session-Token": token}).status_code == 200
+        # ...and the successful header request re-issued the cookie, repairing the browser.
+        assert b.get(f"/api/leases/{lease_id}").status_code == 200
+
+    # Control: the header is what did it. Without it, the same id 404s.
+    stranger = TestClient(app)
+    with stranger:
+        assert stranger.get(f"/api/leases/{lease_id}").status_code == 404
+
+
+def test_a_stale_header_token_is_not_trusted():
+    """An unknown token must not create a shared identity or leak anything."""
+    b = TestClient(app)
+    with b:
+        r = b.get("/api/leases", headers={"X-Session-Token": "not-a-real-token"})
+        assert r.status_code == 200
+        assert r.json()["leases"] == []
+        fresh = r.headers.get("X-Session-Token")
+        assert fresh and fresh != "not-a-real-token"

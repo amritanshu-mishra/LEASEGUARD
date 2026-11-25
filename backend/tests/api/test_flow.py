@@ -564,3 +564,30 @@ def test_hindi_lease_survives_the_whole_journey(client):
     assert findings["rent_escalation"]["expected_paise"] == 4_200_000    # Rs 42,000
     assert findings["maintenance_cap"]["difference_paise"] == 120_000    # Rs 1,200
     assert audit["impact"]["excess_detected_paise"] == 320_000           # Rs 3,200
+
+
+def test_unknown_api_path_is_a_real_404():
+    """The SPA fallback used to answer unmatched API paths with HTTP 200.
+
+    A typo'd endpoint, or the wrong method on a real one, looked like success to
+    any client that checks `res.ok`, then failed later on a missing field. The
+    fallback must not speak for the API.
+    """
+    c = TestClient(app)
+    with c:
+        miss = c.get("/api/definitely-not-a-route")
+        assert miss.status_code == 404
+        assert miss.json()["error"]["code"] == "not_found"
+
+        # Wrong method on a real path is the same class of mistake. (`sample` is a
+        # bad example: it is a valid lease_id for GET /leases/{id}, so that route
+        # matches first and correctly answers 404 for a lease that does not exist.)
+        wrong = c.put("/api/leases/sample")
+        assert wrong.status_code == 405
+        assert wrong.json()["error"]["code"] == "method_not_allowed"
+        assert "POST" in wrong.headers["allow"]
+
+        # The SPA itself still loads on a client-side route.
+        web = c.get("/leases/anything")
+        assert web.status_code == 200
+        assert "text/html" in web.headers["content-type"]

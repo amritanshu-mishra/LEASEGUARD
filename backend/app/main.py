@@ -44,7 +44,32 @@ app.add_middleware(
     allow_credentials=not _allow_all,
     allow_methods=["*"],
     allow_headers=["*"],
+    # The page mirrors the session token out of this header; without exposure a
+    # cross-origin front end can set cookies but cannot read the reply.
+    expose_headers=["X-Session-Token"],
 )
+
+@app.exception_handler(405)
+async def _method_not_allowed(request, exc):
+    """Give 405s the same error shape as every other failure.
+
+    Starlette's default body is `{"detail": "Method Not Allowed"}`, which the app's
+    own client cannot read (it looks for `error.code`), so a wrong-method call from
+    the UI surfaced as "Request failed (405)" with no hint of what to fix.
+    """
+    headers = getattr(exc, "headers", None) or {}
+    allowed = headers.get("allow") or headers.get("Allow")
+    return JSONResponse(
+        status_code=405,
+        content={
+            "error": {
+                "code": "method_not_allowed",
+                "message": f"Use one of: {allowed}" if allowed else "Method not allowed",
+            }
+        },
+        headers={"Allow": allowed} if allowed else None,
+    )
+
 
 @app.middleware("http")
 async def _security_headers(request, call_next):
@@ -73,6 +98,15 @@ def _startup():
     init_db()
 
 
+def _methods_for(path: str) -> set[str]:
+    """HTTP methods a path is actually registered for (empty if unknown)."""
+    methods: set[str] = set()
+    for route in app.routes:
+        if getattr(route, "path", None) == path:
+            methods.update(getattr(route, "methods", set()) or set())
+    return methods - {"HEAD", "OPTIONS"}
+
+
 # Serve frontend build if present
 FRONTEND_DIST = REPO_DIR / "frontend" / "dist"
 if FRONTEND_DIST.exists():
@@ -82,9 +116,31 @@ if FRONTEND_DIST.exists():
 
     @app.get("/{full_path:path}")
     def spa_fallback(full_path: str):
-        # don't swallow API
+        # Never let the SPA fallback answer for the API. Returning 200 with an
+        # error body here is worse than useless: every client that checks
+        # `res.ok` treats a typo'd endpoint or a method mismatch as a success and
+        # then fails on a missing field, which is a confusing bug report far from
+        # the cause. A real 404 in the app's error shape is unambiguous.
         if full_path.startswith("api/"):
-            return {"error": {"code": "not_found", "message": "Not found"}}
+            # The route exists but only for another method: that is a 405, and
+            # saying "not found" sends the caller hunting for a typo that is not
+            # there. Any other unmatched API path really is a 404.
+            allowed = _methods_for("/" + full_path)
+            if allowed:
+                return JSONResponse(
+                    status_code=405,
+                    content={
+                        "error": {
+                            "code": "method_not_allowed",
+                            "message": f"Use one of: {', '.join(sorted(allowed))}",
+                        }
+                    },
+                    headers={"Allow": ", ".join(sorted(allowed))},
+                )
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Not found"}},
+            )
         file_path = FRONTEND_DIST / full_path
         if full_path and file_path.is_file():
             return FileResponse(str(file_path))

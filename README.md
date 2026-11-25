@@ -182,15 +182,15 @@ Base path `/api`. JSON in, JSON out.
 ```bash
 cd backend
 bash ../scripts/install_backend.sh        # installs deps and verifies OCR imports
-PYTHONPATH=. pytest -q                    # 124 tests
+PYTHONPATH=. pytest -q                    # 135 tests
 PYTHONPATH=. pytest -q --cov=app.domain --cov=app.services --cov-fail-under=90
 
 cd ../frontend
 npm ci && npm run e2e:ci                  # builds, starts the API, drives the real UI
 ```
 
-**124 backend tests, 94% branch coverage** on the domain + service layers (the spec target is
-90%), plus **31 UI end-to-end checks**. CI runs both on every push
+**135 backend tests, 94% branch coverage** on the domain + service layers (the spec target is
+90%), plus **32 UI end-to-end checks**. CI runs both on every push
 (`.github/workflows/ci.yml`).
 
 - `tests/domain/test_golden_cases.py` — the spec's golden cases **G1–G6** and unit cases
@@ -282,13 +282,18 @@ samples/                   the three synthetic PDFs
   one node, no shared store, and it is described that way rather than as infrastructure it is
   not.
 
-- **Sessions, not accounts.** Each browser gets an opaque token in an HttpOnly,
-  `SameSite=Lax` cookie; only its SHA-256 hash is stored, and every query is scoped to the
-  session's `user_id`. Two browsers cannot see each other's leases, bills or activity trail
-  (six tests cover exactly that). What this is **not**: there is no password, no email, no
-  recovery, and no account that follows you to a second device. Clearing cookies loses the
-  leases. It is enough to stop one tenant reading another's rent, which is the property that
-  matters; it is not a login system, and the demo does not claim to be one.
+- **Sessions, not accounts.** Each browser gets an opaque token in an HttpOnly cookie; only
+  its SHA-256 hash is stored, and every query is scoped to the session's `user_id`. The
+  cookie is `SameSite=Lax` over plain HTTP and `SameSite=None; Secure` over TLS, and the
+  token is echoed in an `X-Session-Token` header that the page replays. That is not
+  belt-and-braces for its own sake: the app is also shown inside a cross-origin iframe,
+  where a Lax cookie is never sent back, and the symptom was a sample case that loaded
+  successfully and then 404'd on the next screen. Two browsers cannot see each other's
+  leases, bills or activity trail (ten tests cover that, including the cookie-less path).
+  What this is **not**: there is no password, no email, no recovery, and no account that
+  follows you to a second device. Clearing cookies *and* the tab's `sessionStorage` loses
+  the leases. It is enough to stop one tenant reading another's rent, which is the property
+  that matters; it is not a login system, and the demo does not claim to be one.
 
 - **OCR reads scans and photos, with honest caveats.** A PDF with no text layer is rendered
   page by page and read with RapidOCR; a JPEG/PNG upload goes straight to OCR. Measured

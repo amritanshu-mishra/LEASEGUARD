@@ -35,6 +35,7 @@ const results = []
 const httpErrors = []
 const jsErrors = []
 let cookie = ''
+let sessionToken = ''
 
 function check(name, ok, detail = '') {
   results.push({ name, ok: !!ok, detail })
@@ -85,6 +86,9 @@ function boot() {
     const path = String(url).startsWith('http') ? String(url) : BASE + String(url)
     const headers = { ...(opts.headers || {}) }
     if (cookie) headers['Cookie'] = cookie
+    // No harness-side token injection: the app itself replays the token it
+    // stored, which is what actually ships. Injecting it here would make the
+    // cookie-less check below pass even if the app had no fallback at all.
 
     const res = await fetch(path, { method: opts.method || 'GET', headers, body: opts.body, signal: opts.signal })
 
@@ -93,12 +97,21 @@ function boot() {
       const m = raw.match(/lg_session=([^;]+)/)
       if (m) cookie = `lg_session=${m[1]}`
     }
+    // The app also mirrors the token out of a header and replays it, which is how
+    // it survives a browser that drops cookies. Model both, or the harness tests
+    // a browser nobody has.
+    const headerToken = res.headers.get('x-session-token')
+    if (headerToken) sessionToken = headerToken
 
     const text = await res.text()
     if (!res.ok) httpErrors.push(`${opts.method || 'GET'} ${url} -> ${res.status}`)
+    const responseHeaders = {
+      get: (name) => (String(name).toLowerCase() === 'x-session-token' ? headerToken : null),
+    }
     return {
       ok: res.ok,
       status: res.status,
+      headers: responseHeaders,
       text: async () => text,
       json: async () => JSON.parse(text),
     }
@@ -287,6 +300,8 @@ async function main() {
   // asserting on a control that only exists on another route.
   const auditLink = $$(w, 'a').find((a) => /audit/i.test(a.textContent || ''))
   check('an invoice audit link exists', !!auditLink, `on lease screen: ${txt(w).slice(0, 120)}`)
+  // Remembered for the cookie-less-reload check later: this is a real lease route.
+  const leaseRoute = w.location.pathname
   if (auditLink) {
     click(auditLink)
     const onAudit = await until(() => /verdict|finding|approve|approval|letter/i.test(txt(w)))
@@ -325,6 +340,34 @@ async function main() {
       }
     }
   }
+
+  // ------------------------------------------- survive a browser that drops cookies
+  // Embeds, preview iframes and Safari ITP refuse third-party cookies. The server
+  // also returns the session token in a header and the app replays it, so a lease
+  // must stay reachable even with the cookie gone. Without this, the app looks
+  // like it lost the tenant's data at exactly the wrong moment (a demo).
+  const savedCookie = cookie
+  cookie = ''
+  // Verified by negative control: clearing sessionStorage as well makes this
+  // check fail (the page shows the lost-session card). That is the bug this
+  // check exists to catch, so it is a real assertion, not a tautology.
+  const leasePath = leaseRoute
+  // Leave the lease route first: navigating to the path already shown is a no-op,
+  // so the app would never refetch and the check would pass without testing
+  // anything. (Verified with a negative control: without the header fallback this
+  // check fails, which is the point.)
+  w.history.pushState({}, '', '/')
+  w.dispatchEvent(new w.PopStateEvent('popstate', { state: {} }))
+  await until(() => $$(w, '.lease-card').length > 0)
+  const reopened = await until(() => {
+    w.history.pushState({}, '', leasePath)
+    // A plain Event is not enough: the router keys off popstate.
+    w.dispatchEvent(new w.PopStateEvent('popstate', { state: {} }))
+    // Language-agnostic: the term rows only render once the lease has loaded.
+    return $$(w, '.term-fix').length > 0
+  })
+  check('lease still opens with no cookie (header identity)', reopened, `body: ${txt(w).slice(0, 160)}`)
+  cookie = savedCookie
 
   check('no uncaught JS errors during the journey', jsErrors.length === 0, jsErrors.join('; '))
   check('no failed HTTP requests during the journey', httpErrors.length === 0, httpErrors.join('; '))

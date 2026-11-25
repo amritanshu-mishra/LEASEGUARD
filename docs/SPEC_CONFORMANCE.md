@@ -22,7 +22,7 @@ How it was verified: `cd backend && PYTHONPATH=. pytest -q --cov=app.domain --co
 | **BR8** | Confirmed only when billed − expected > 0; undercharges are **information, not findings** | ✅ *(was violated — fixed)* | `checks/*.py` return `NO_ISSUE` + `informational=True`; excluded from impact totals, letters, approvals. Tests: `test_g3_*`, `test_br8_*`, `test_undercharge_is_information_not_a_finding` |
 | **BR9** | Letters include approved findings only, wording "discrepancies for review" | ✅ | `services/letter_service.py`; 6 letter tests incl. rejected-finding exclusion |
 | **BR10** | Every approval/rejection/generation logged with user + timestamp | ✅ *(was thin — fixed)* | `audit_log.detail` records the decision value; `GET /api/audit-log`; `test_audit_log_records_who_did_what` |
-| **BR11** | A user can only read/change their own leases | ✅ | Every route takes a `current_user` dependency and every query is scoped by that id. Finding lookups join through the lease owner, closing a hole where `GET /invoices/{id}/findings` trusted a raw id. Identity is a per-browser session cookie (opaque token, SHA-256 at rest), not a login - see README. Tests: `tests/api/test_sessions.py` (6), `test_corrections.py` (cross-tenant 404) |
+| **BR11** | A user can only read/change their own leases | ✅ | Every route takes a `current_user` dependency and every query is scoped by that id. Finding lookups join through the lease owner, closing a hole where `GET /invoices/{id}/findings` trusted a raw id. Identity is a per-browser session cookie (opaque token, SHA-256 at rest), not a login - see README. Tests: `tests/api/test_sessions.py` (10), `test_corrections.py` (cross-tenant 404) |
 
 ### Two bugs found by writing the rule tests
 
@@ -101,12 +101,16 @@ scheduled re-audits. None of these affect the core claim of the product.
 
 Two of these were closed after the first judging pass rather than left as cuts:
 
-- **Per-browser sessions instead of accounts.** An opaque token in an HttpOnly,
-  `SameSite=Lax` cookie, stored only as a SHA-256 hash, with every query scoped to its
-  `user_id`. No password, no email, no recovery, no cross-device identity - but two tenants
-  can no longer read each other's leases, bills or activity trail, which is the property
-  that actually matters. Six tests cover the isolation, including that a stranger's delete
-  removes no files.
+- **Per-browser sessions instead of accounts.** An opaque token in an HttpOnly cookie,
+  stored only as a SHA-256 hash, with every query scoped to its `user_id`. The cookie is
+  `SameSite=Lax` on plain HTTP and `SameSite=None; Secure` over TLS, because the app is
+  also demoed inside a cross-origin iframe where a Lax cookie is never sent - the symptom
+  was a loaded sample case that reported success and then 404'd. The same token is returned
+  in an `X-Session-Token` header that the page replays, so a browser that blocks
+  third-party cookies still holds its identity. No password, no email, no recovery, no
+  cross-device identity - but two tenants can no longer read each other's leases, bills or
+  activity trail, which is the property that actually matters. Ten tests cover the
+  isolation, including that a stranger's delete removes no files.
 - **Photo upload.** See the OCR row above.
 
 One cut remains a cut: there is no legal-grade account system, and the README says so in the
@@ -119,7 +123,7 @@ same words.
 | Criterion | Weight | Evidence in this repo |
 |---|---|---|
 | **Problem understanding** | 25% | `docs/PROBLEM_BRIEF.md`; six named failure modes; the sample reproduces the most common one (amendment ignored). Written from the tenant's situation, not the technology |
-| **Working solution** | 25% | Live app completes the full journey; 95 backend tests + 23 UI end-to-end checks in CI; upload path works on unseen documents, scans and photos; migration verified against an old-schema DB |
+| **Working solution** | 25% | Live app completes the full journey; 135 backend tests + 32 UI end-to-end checks in CI; upload path works on unseen documents, scans and photos; migration verified against an old-schema DB |
 | **Innovation** | 20% | Deterministic precedence with a *refuse-to-guess* rule for ambiguous newer clauses; quote-gated extraction that discards any model output not literally in the document; evidence-preserving Hindi letter |
 | **Value and impact** | 20% | `docs/VALUE_AND_ADOPTION.md`; impact metric with explicit non-claims; association-led adoption path; honest failure risks |
 | **User experience** | 10% | Hindi on all key screens incl. the letter; WhatsApp as the send channel; evidence-first cards; accessibility pass; 360 px layout |
@@ -128,10 +132,11 @@ same words.
 
 ## 6. Known gaps (stated, not hidden)
 
-1. **Sessions, not accounts.** Every browser gets a private, opaque session and all 11 routes
-   are scoped to it, so one tenant cannot reach another's data. There is still no password,
-   email, recovery or cross-device account: clearing cookies loses the leases, and there is
-   nothing to log back in to. Fine for a judged demo; not sufficient for production.
+1. **Sessions, not accounts.** Every browser gets a private, opaque session and all API
+   routes are scoped to it, so one tenant cannot reach another's data. There is still no
+   password, email, recovery or cross-device account: clearing both cookies *and* the
+   tab's `sessionStorage` loses the leases, and there is nothing to log back in to. Fine for
+   a judged demo; not sufficient for production.
 2. **Two checks only.** Rent escalation and maintenance cap. The precedence engine
    generalises, the check library does not yet cover deposits, late fees or GST.
 3. **Uncertain terms are resolvable.** A missing clause can be supplied by the tenant, and a
